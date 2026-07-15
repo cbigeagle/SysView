@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SysView Diagnostics - Windows WebView2 & Memory Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <div class="container">
+        <!-- HEADER -->
+        <header>
+            <div class="header-left">
+                <div class="logo">
+                    <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <line x1="9" y1="3" x2="9" y2="21"></line>
+                        <line x1="15" y1="3" x2="15" y2="21"></line>
+                        <line x1="3" y1="9" x2="21" y2="9"></line>
+                        <line x1="3" y1="15" x2="21" y2="15"></line>
+                    </svg>
+                </div>
+                <div class="title-area">
+                    <h1>SysView Diagnostics</h1>
+                    <p class="subtitle">Windows WebView2 & Memory Deep Dive</p>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="status-badge" id="last-update-container">
+                    <span class="pulse-indicator"></span>
+                    <span id="last-updated">Waiting for snapshot...</span>
+                </div>
+                <button id="refresh-btn" class="btn-primary">
+                    <svg class="refresh-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"></polyline>
+                        <polyline points="1 20 1 14 7 14"></polyline>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                    </svg>
+                    <span>Grab Snapshot</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- GLOBAL STATS CARDS -->
+        <section class="quick-stats">
+            <div class="stat-card">
+                <div class="stat-icon cpu-theme">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+                        <rect x="9" y="9" width="6" height="6"></rect>
+                        <line x1="9" y1="1" x2="9" y2="4"></line>
+                        <line x1="15" y1="1" x2="15" y2="4"></line>
+                        <line x1="9" y1="20" x2="9" y2="23"></line>
+                        <line x1="15" y1="20" x2="15" y2="23"></line>
+                        <line x1="20" y1="9" x2="23" y2="9"></line>
+                        <line x1="20" y1="15" x2="23" y2="15"></line>
+                        <line x1="1" y1="9" x2="4" y2="9"></line>
+                        <line x1="1" y1="15" x2="4" y2="15"></line>
+                    </svg>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-label">Overall CPU Usage</span>
+                    <span class="stat-val" id="cpu-total">0.0%</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon ram-theme">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 19h12V5H6v14z"></path>
+                        <line x1="9" y1="5" x2="9" y2="3"></line>
+                        <line x1="12" y1="5" x2="12" y2="3"></line>
+                        <line x1="15" y1="5" x2="15" y2="3"></line>
+                        <line x1="9" y1="19" x2="9" y2="21"></line>
+                        <line x1="12" y1="19" x2="12" y2="21"></line>
+                        <line x1="15" y1="19" x2="15" y2="21"></line>
+                    </svg>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-label">Memory Utilization</span>
+                    <span class="stat-val" id="ram-used-pct">0%</span>
+                    <span class="stat-sub" id="ram-used-ratio">0 GB / 0 GB</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon wv-theme">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="2" y1="12" x2="22" y2="12"></line>
+                        <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                    </svg>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-label">WebView2 Instances</span>
+                    <span class="stat-val" id="wv-count">0</span>
+                    <span class="stat-sub" id="wv-mem-total">Total: 0 MB</span>
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon pool-theme" id="pool-warning-icon">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 22h20L12 2z"></path>
+                        <line x1="12" y1="9" x2="12" y2="15"></line>
+                        <line x1="12" y1="19" x2="12.01" y2="19"></line>
+                    </svg>
+                </div>
+                <div class="stat-info">
+                    <span class="stat-label">Non-Paged Pool (Drivers)</span>
+                    <span class="stat-val" id="nonpaged-pool">0 MB</span>
+                    <span class="stat-sub" id="pool-status">Healthy</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- MEMORY DEEP DIVE SECTION -->
+        <section class="dashboard-block memory-section">
+            <h2>Windows System Memory Breakdown</h2>
+            <p class="section-desc">Windows does not allocate memory in a simple "Used" or "Free" binary structure. High RAM usage often stems from active caching or driver allocations.</p>
+            
+            <!-- STACKED BAR CHART -->
+            <div class="memory-bar-container">
+                <div class="memory-bar" id="memory-bar-chart">
+                    <!-- Dynamic segments injected by JS -->
+                    <div class="segment-loading">Waiting for data...</div>
+                </div>
+                <div class="memory-legend" id="memory-legend-list">
+                    <!-- Dynamic legend items -->
+                </div>
+            </div>
+
+            <!-- DETAILED CARD GRID -->
+            <div class="memory-detail-grid">
+                <div class="detail-card active-ram-card">
+                    <h3>In-Use Memory</h3>
+                    <div class="detail-size" id="size-inuse">0.00 GB</div>
+                    <p class="detail-explanation">RAM allocated actively to user applications and Windows processes. This memory is completely committed and cannot be easily reclaimed without closing apps.</p>
+                </div>
+                <div class="detail-card standby-card">
+                    <h3>Standby List (System Cache)</h3>
+                    <div class="detail-size" id="size-standby">0.00 GB</div>
+                    <p class="detail-explanation">Memory used to store files and programs you previously opened. Windows keeps them in RAM to speed up access. **This memory is immediately released** if a running app demands it, which is why it shouldn't be counted as a leak.</p>
+                </div>
+                <div class="detail-card nonpaged-card" id="nonpaged-detail-card">
+                    <h3>Non-Paged Pool</h3>
+                    <div class="detail-size" id="size-nonpaged">0.00 GB</div>
+                    <p class="detail-explanation">Reserved kernel/driver memory that *must* remain in RAM and cannot be moved to the disk pagefile. If this exceeds **1.5 GB**, you likely have a **kernel memory leak** caused by a buggy driver (often Wi-Fi, Ethernet, or graphics).</p>
+                </div>
+                <div class="detail-card paged-card">
+                    <h3>Paged Pool</h3>
+                    <div class="detail-size" id="size-paged">0.00 GB</div>
+                    <p class="detail-explanation">Kernel memory used by system services that can be paged out to the disk if RAM gets tight. Managed automatically by the operating system.</p>
+                </div>
+            </div>
+        <!-- WSL & VIRTUALIZATION DRILL-DOWN (Hidden by default, shown if vmmem is active) -->
+        <section class="dashboard-block wsl-section" id="wsl-drilldown" style="display: none;">
+            <div class="section-header">
+                <div>
+                    <h2>WSL2 & Container Virtualization Analyzer</h2>
+                    <p class="section-desc">Windows Subsystem for Linux (WSL2) runs within a utility Virtual Machine (represented by the <code>vmmemWSL</code> or <code>vmmem</code> process). It dynamically allocates RAM but does *not* release it back to Windows automatically when tasks finish.</p>
+                </div>
+                <button id="wsl-shutdown-btn" class="btn-primary" style="background-color: var(--accent-danger); box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2); border-color: rgba(255,255,255,0.05);">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+                        <line x1="12" y1="2" x2="12" y2="12"></line>
+                    </svg>
+                    <span>Shut Down WSL & Reclaim Memory</span>
+                </button>
+            </div>
+            
+            <!-- Docker Desktop lock warning -->
+            <div id="wsl-docker-warning" class="insight-item warning" style="display: none; margin-bottom: 0.5rem;">
+                <div class="insight-icon" style="color: var(--accent-pool);">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                        <line x1="12" y1="9" x2="12" y2="13"></line>
+                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                    </svg>
+                </div>
+                <div class="insight-content">
+                    <h4>Docker Desktop is Locking WSL</h4>
+                    <p>Docker Desktop is currently active in the background. It maintains an active connection to WSL and will immediately wake the virtual machine back up if it is terminated. To successfully reclaim this memory, please <strong>Quit Docker Desktop</strong> (right-click the Docker whale icon in your taskbar system tray and select <em>Quit Docker Desktop</em>), then click the shutdown button again.</p>
+                </div>
+            </div>
+            
+            <div class="wsl-content-grid">
+                <div class="wsl-status-card">
+                    <h4>WSL Distribution States</h4>
+                    <div class="wsl-distro-list" id="wsl-distro-list">
+                        <!-- Dynamic distro states -->
+                    </div>
+                </div>
+                <div class="wsl-advice-card">
+                    <h4>WSL Configuration & Capping</h4>
+                    <div class="wsl-config-status" id="wsl-config-status">
+                        <!-- Dynamic config message -->
+                    </div>
+                    <p class="wsl-note">
+                        To permanently limit WSL2 memory consumption (capping it so it never starves Windows), create a configuration file named <code>.wslconfig</code> in your user home folder (<code>C:\Users\cbige\.wslconfig</code>) with the following content:
+                    </p>
+                    <pre class="code-preview">[wsl2]
+memory=4GB</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- WEBVIEW2 ANALYSIS SECTION -->
+        <section class="dashboard-block webview-section">
+            <div class="section-header">
+                <div>
+                    <h2>WebView2 Process Groupings</h2>
+                    <p class="section-desc">WebView2 runs as independent subprocesses for security and stability. Here are the true applications hosting WebView2, expanded to show what role each process performs.</p>
+                </div>
+                <div class="filter-controls">
+                    <input type="text" id="wv-search" placeholder="Filter host application...">
+                </div>
+            </div>
+
+            <div class="wv-groups-container" id="webview-groups">
+                <div class="loading-state">
+                    <div class="spinner"></div>
+                    <p>Capturing snapshot, checking parent trees, and analyzing arguments...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- SYSTEM MEMORY HOGS & ADVICE ROW -->
+        <div class="dashboard-row">
+            <!-- TOP SYSTEM MEMORY HOGS -->
+            <section class="dashboard-block half-block memory-hogs">
+                <h2>Top Non-WebView Memory Hogs</h2>
+                <p class="section-desc">These are the top background or user processes on your system (excluding WebView2) sorted by physical private RAM consumption.</p>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Process Name</th>
+                                <th class="text-right">PID</th>
+                                <th class="text-right">Private RAM</th>
+                                <th class="text-right">Working Set</th>
+                                <th class="text-right">CPU</th>
+                            </tr>
+                        </thead>
+                        <tbody id="memory-hogs-table">
+                            <tr>
+                                <td colspan="5" class="text-center">Waiting for data snapshot...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- DIAGNOSTIC ADVICE -->
+            <section class="dashboard-block half-block advice-block">
+                <h2>Diagnostic Recommendations</h2>
+                <p class="section-desc">Real-time evaluation of your system metrics against standard operating thresholds.</p>
+                
+                <div class="insights-container" id="diagnostic-insights">
+                    <div class="insight-item info">
+                        <div class="insight-icon">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="16" x2="12" y2="12"></line>
+                                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                            </svg>
+                        </div>
+                        <div class="insight-content">
+                            <h4>Analyzing snapshot...</h4>
+                            <p>Once a system snapshot is retrieved, custom diagnostic rules will evaluate pool limits, webview memory load, and background services.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- FOOTER -->
+        <footer>
+            <p>SysView Diagnostics Utility &bull; Antigravity Pair Programming Project</p>
+            <p class="footer-note">Note: Process memory details are collected via fast WMI/CIM enumeration. Active CPU states are sampled over a 300ms window.</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
