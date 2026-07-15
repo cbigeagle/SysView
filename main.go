@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"embed"
+	"flag"
 	"fmt"
 	"io/fs"
 	"log"
@@ -22,8 +23,24 @@ var snapshotScript string
 const defaultPort = 22880
 
 func main() {
-	// Find an available port, starting with defaultPort
-	port := findAvailablePort(defaultPort)
+	// Parse CLI flags
+	portFlag := flag.Int("port", 0, "Explicit port to run the server on (overrides auto-detection)")
+	flag.Parse()
+
+	var port int
+	if *portFlag > 0 {
+		// Verify if the requested port is free
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *portFlag))
+		if err != nil {
+			log.Fatalf("Port %d is already in use. Please select a different port.", *portFlag)
+		}
+		ln.Close()
+		port = *portFlag
+	} else {
+		// Find an available port starting at defaultPort
+		port = findAvailablePort(defaultPort)
+	}
+
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	// Get FS for static folder

@@ -2,7 +2,7 @@
 
 A modern, glassmorphic Windows resource and memory diagnostics dashboard designed to expose hidden RAM consumption, map Microsoft Edge WebView2 embedded frames, analyze WSL2/virtualization ballooning, and provide safety-classified background process insights.
 
-![SysView Dashboard](https://raw.githubusercontent.com/cbigeagle/SysView/main/docs/screenshot_placeholder.png) *(Note: Add your dashboard screenshot here!)*
+![SysView Dashboard](docs/dashboard_screenshot.png)
 
 ---
 
@@ -46,25 +46,24 @@ go build -ldflags "-s -w" -o SysView.exe
 
 ### 2. Run the Utility
 
-Simply execute the compiled binary:
+You have two convenient ways to run and manage the diagnostics server:
+
+#### Option A: Use the Desktop Service Manager (Recommended)
+We have included a lightweight desktop controller app:
+1. Double-click **`SysView.bat`** in your project folder.
+2. This opens the dark-themed **SysView Service Manager** window.
+3. Configure your desired port (defaults to `22880` and saves to `config.json`), click **Start Server**, and click **Open Web UI** to view the dashboard! You can stop the background process at any time by clicking **Stop Server**.
+
+#### Option B: Run via Command Line
+Alternatively, you can start the executable directly from your PowerShell terminal:
 
 ```powershell
+# Run with default port auto-detection (checks 22880, then 22881, etc.)
 .\SysView.exe
+
+# Override and bind to a specific port directly
+.\SysView.exe -port 8080
 ```
-
-The server will spin up and start listening in the background:
-```text
-=========================================
-SysView Diagnostics Utility
-Server listening on: http://localhost:22880
-Press Ctrl+C in this terminal to exit.
-=========================================
-```
-
-### 3. Open the Dashboard
-
-Open your web browser and navigate to:
-**[http://localhost:22880](http://localhost:22880)**
 
 ---
 
