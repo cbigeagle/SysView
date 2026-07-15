@@ -2,7 +2,7 @@
 
 A modern, glassmorphic Windows resource and memory diagnostics dashboard designed to expose hidden RAM consumption, map Microsoft Edge WebView2 embedded frames, analyze WSL2/virtualization ballooning, and provide safety-classified background process insights.
 
-![SysView Dashboard](https://raw.githubusercontent.com/username/SysView/main/docs/screenshot_placeholder.png) *(Note: Add your dashboard screenshot here!)*
+![SysView Dashboard](https://raw.githubusercontent.com/cbigeagle/SysView/main/docs/screenshot_placeholder.png) *(Note: Add your dashboard screenshot here!)*
 
 ---
 
