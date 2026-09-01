@@ -104,7 +104,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (cl.includes('--type=gpu-process')) {
             return {
                 role: 'gpu',
-                desc: 'GPU Process: Interacts with the graphics card to handle 3D composting, hardware-accelerated drawing, and smooth interface transitions.'
+                desc: 'GPU Process: Handles graphics output and 3D compositing for the host application.'
             };
         }
         if (cl.includes('--type=crashpad-handler')) {
@@ -123,7 +123,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (cl.includes('storage.mojom.storageservice')) {
                 return {
                     role: 'storage',
-                    desc: 'Storage Service: Manages localized application databases (IndexedDB, cookies, cookies, localStorage).'
+                    desc: 'Storage Service: Manages local databases (IndexedDB, cookies, localStorage).'
                 };
             }
             if (cl.includes('audio.mojom.audioservice')) {
@@ -200,24 +200,42 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    // Main Fetch Function
+    // Main Fetch Function — handles versioned envelope
+    let sysViewToken = window.__SYSVIEW_TOKEN__ || null;
+    async function ensureToken() {
+        if (sysViewToken) return sysViewToken;
+        const meta = document.querySelector('meta[name="sysview-token"]');
+        if (meta && meta.content) { sysViewToken = meta.content; return sysViewToken; }
+        try {
+            const r = await fetch('/api/config');
+            if (r.ok) { const j = await r.json(); if (j.token) sysViewToken = j.token; }
+        } catch {}
+        return sysViewToken;
+    }
     async function grabSnapshot() {
         // Show Loading States
         refreshBtn.disabled = true;
-        refreshIcon.classList.add('spinning');
-        document.querySelector('.pulse-indicator').classList.add('loading');
+        if (refreshIcon) refreshIcon.classList.add('spinning');
+        const pulse = document.querySelector('.pulse-indicator');
+        if (pulse) pulse.classList.add('loading');
         lastUpdatedSpan.textContent = 'Refreshing system telemetry...';
         
         try {
             const response = await fetch('/api/snapshot');
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                const txt = await response.text();
+                throw new Error(`HTTP ${response.status}: ${txt.slice(0,400)}`);
             }
             
-            const data = await response.json();
+            const envelope = await response.json();
+            // Unwrap versioned envelope (snapshot.ps1 v2) or legacy shape
+            const data = envelope.data ? envelope.data : envelope;
+            const providers = envelope.providers || {};
+            const errors = envelope.errors || [];
+            data._envelope = { capturedAt: envelope.capturedAt, providers, errors, schemaVersion: envelope.schemaVersion };
             currentData = data;
             
-            // Render UI
+            // Render UI (handles unavailable providers)
             updateUI(data);
             
         } catch (error) {
@@ -225,25 +243,16 @@ document.addEventListener('DOMContentLoaded', () => {
             lastUpdatedSpan.textContent = 'Error fetching snapshot';
             
             // Fallback content in case of server loss
-            diagnosticInsightsContainer.innerHTML = `
-                <div class="insight-item danger">
-                    <div class="insight-icon">
-                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="10"></circle>
-                            <line x1="12" y1="16" x2="12" y2="12"></line>
-                            <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                        </svg>
-                    </div>
-                    <div class="insight-content">
-                        <h4>Failed to communicate with SysView service</h4>
-                        <p>Verify that <code>SysView.exe</code> is running locally on your computer and hasn't been closed.</p>
-                    </div>
-                </div>
-            `;
+            diagnosticInsightsContainer.innerHTML = '';
+            const div = document.createElement('div');
+            div.className = 'insight-item danger';
+            div.innerHTML = `<div class="insight-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></div><div class="insight-content"><h4>Failed to communicate with SysView service</h4><p>Verify that <code>SysView.exe</code> is running locally and hasn't been closed.</p><p class="wsl-note">Details: ${String(error.message || error).slice(0,300)}</p></div>`;
+            diagnosticInsightsContainer.appendChild(div);
         } finally {
             refreshBtn.disabled = false;
-            refreshIcon.classList.remove('spinning');
-            document.querySelector('.pulse-indicator').classList.remove('loading');
+            if (refreshIcon) refreshIcon.classList.remove('spinning');
+            const pulse2 = document.querySelector('.pulse-indicator');
+            if (pulse2) pulse2.classList.remove('loading');
         }
     }
 
@@ -251,7 +260,6 @@ document.addEventListener('DOMContentLoaded', () => {
         // Update Timestamp
         const now = new Date();
         lastUpdatedSpan.textContent = `Last update: ${now.toLocaleTimeString()}`;
-        
         // 1. Get process maps
         const allProcessesMap = {};
         let totalCpuUsed = 0.0;
@@ -264,51 +272,85 @@ document.addEventListener('DOMContentLoaded', () => {
         // Update CPU indicator
         cpuTotalSpan.textContent = `${totalCpuUsed.toFixed(1)}%`;
 
-        // 2. RAM calculations
+        // 2. RAM calculations — use VisiblePhysicalBytes for OS utilization (installed = visible + hardware reserved)
         const mem = data.Memory;
-        const totalRAM = mem.TotalPhysicalBytes;
-        const availRAM = mem.AvailableBytes;
-        const usedRAM = totalRAM - availRAM;
-        const usedRAMPct = Math.round((usedRAM / totalRAM) * 100);
-        
-        ramUsedPctSpan.textContent = `${usedRAMPct}%`;
-        ramUsedRatioSpan.textContent = `${(usedRAM / (1024*1024*1024)).toFixed(1)} GB / ${(totalRAM / (1024*1024*1024)).toFixed(0)} GB`;
-        
-        // 3. Update memory cards sizes
-        sizeInUseSpan.textContent = formatGB(mem.InUseBytes);
-        sizeStandbySpan.textContent = formatGB(mem.StandbyBytes);
-        sizeNonpagedSpan.textContent = formatBytes(mem.NonpagedPoolBytes);
-        sizePagedSpan.textContent = formatBytes(mem.PagedPoolBytes);
-        
-        // Update Non-paged warning thresholds — class-driven, no inline styles
-        const nonPagedPoolMB = mem.NonpagedPoolBytes / (1024 * 1024);
-        nonpagedPoolSpan.textContent = `${nonPagedPoolMB.toFixed(0)} MB`;
-        
-        poolStatusSpan.classList.remove('pool-status--danger', 'pool-status--warn', 'pool-status--good');
-        if (nonPagedPoolMB > 1500) {
-            poolStatusSpan.textContent = 'Elevated non-paged pool';
-            poolStatusSpan.classList.add('pool-status--danger');
-            poolWarningIcon.classList.add('warning');
-            nonpagedDetailCard.classList.add('warning');
-        } else if (nonPagedPoolMB > 1000) {
-            poolStatusSpan.textContent = 'Elevated';
-            poolStatusSpan.classList.add('pool-status--warn');
-            poolWarningIcon.classList.add('warning');
-            nonpagedDetailCard.classList.add('warning');
+        const providers = (data._envelope && data._envelope.providers) || {};
+        const memUnavailable = providers.memory === 'unavailable' || !mem || (mem.VisiblePhysicalBytes === 0 && mem.TotalPhysicalBytes === 0);
+        if (memUnavailable) {
+            ramUsedPctSpan.textContent = 'Unavailable';
+            ramUsedRatioSpan.textContent = 'Memory provider unavailable';
+            sizeInUseSpan.textContent = 'Unavailable';
+            sizeStandbySpan.textContent = 'Unavailable';
+            sizeNonpagedSpan.textContent = 'Unavailable';
+            sizePagedSpan.textContent = 'Unavailable';
+            nonpagedPoolSpan.textContent = '—';
+            poolStatusSpan.textContent = 'Unknown';
+            poolStatusSpan.classList.remove('pool-status--danger','pool-status--warn','pool-status--good');
+            memoryBarChart.innerHTML = '<div class="segment-loading">Memory provider unavailable — check errors and retry. Not a healthy zero.</div>';
+            memoryLegendList.innerHTML = '';
+            // still render other sections with what we have
         } else {
-            poolStatusSpan.textContent = 'Within expected range';
-            poolStatusSpan.classList.add('pool-status--good');
-            poolWarningIcon.classList.remove('warning');
-            nonpagedDetailCard.classList.remove('warning');
-        }
+            const visible = mem.VisiblePhysicalBytes || mem.TotalPhysicalBytes;
+            const installed = mem.TotalPhysicalBytes;
+            const hwReserved = mem.HardwareReservedBytes || 0;
+            const available = mem.AvailableBytes;
+            const used = mem.InUseBytes != null ? mem.InUseBytes : (visible - available);
+            const usedPct = visible > 0 ? Math.round((used / visible) * 100) : 0;
+            
+            ramUsedPctSpan.textContent = `${usedPct}%`;
+            // Show visible denominator; hardware reserved as separate fact in tooltip/title
+            ramUsedRatioSpan.textContent = `${(used / (1024*1024*1024)).toFixed(1)} GB / ${(visible / (1024*1024*1024)).toFixed(1)} GB visible`;
+            ramUsedRatioSpan.title = `Installed: ${(installed/(1024*1024*1024)).toFixed(1)} GB, Hardware reserved: ${(hwReserved/(1024*1024*1024)).toFixed(2)} GB`;
+            
+            // Update memory cards sizes
+            sizeInUseSpan.textContent = formatGB(mem.InUseBytes);
+            sizeStandbySpan.textContent = formatGB(mem.StandbyBytes);
+            sizeNonpagedSpan.textContent = mem.NonpagedPoolBytes != null ? formatBytes(mem.NonpagedPoolBytes) : 'Unavailable';
+            sizePagedSpan.textContent = mem.PagedPoolBytes != null ? formatBytes(mem.PagedPoolBytes) : 'Unavailable';
+            
+            // Detail: show pools as part of In-Use, not separate bar; add info to card title via small note
+            const poolPctVisible = visible > 0 ? (mem.NonpagedPoolBytes / visible * 100).toFixed(2) : '0';
+            // Update Non-paged warning — single sample cannot prove leak; show elevated status with evidence
+            const nonPagedPoolMB = mem.NonpagedPoolBytes / (1024 * 1024);
+            nonpagedPoolSpan.textContent = `${nonPagedPoolMB.toFixed(0)} MB`;
+            
+            poolStatusSpan.classList.remove('pool-status--danger', 'pool-status--warn', 'pool-status--good');
+            if (nonPagedPoolMB > 1500) {
+                poolStatusSpan.textContent = `Elevated non-paged pool (${poolPctVisible}% of visible)`;
+                poolStatusSpan.classList.add('pool-status--warn');
+                poolWarningIcon.classList.add('warning');
+                nonpagedDetailCard.classList.add('warning');
+            } else if (nonPagedPoolMB > 800) {
+                poolStatusSpan.textContent = `Elevated (${poolPctVisible}% of visible)`;
+                poolStatusSpan.classList.add('pool-status--warn');
+                poolWarningIcon.classList.add('warning');
+                nonpagedDetailCard.classList.add('warning');
+            } else {
+                poolStatusSpan.textContent = `Within expected range (${poolPctVisible}% of visible)`;
+                poolStatusSpan.classList.add('pool-status--good');
+                poolWarningIcon.classList.remove('warning');
+                nonpagedDetailCard.classList.remove('warning');
+            }
 
-        // 4. Render Stack Bar Chart
-        renderMemoryBar(mem);
+            // Render mutually-exclusive bar
+            renderMemoryBar(mem);
+        }
+        
+        // Surface provider errors inline if any
+        if (data._envelope && data._envelope.errors && data._envelope.errors.length) {
+            const errNote = document.createElement('div');
+            errNote.className = 'insight-item warning';
+            errNote.style.marginTop = '0.5rem';
+            const msgs = data._envelope.errors.map(e => `${e.provider}: ${e.message}`).join(' | ').slice(0, 600);
+            errNote.innerHTML = `<div class="insight-icon">⚠</div><div class="insight-content"><h4>Provider note</h4><p>${msgs}</p></div>`;
+            // prepend to diagnostic container after it renders? store for later
+            data._envelope._banner = errNote;
+        }
         
         // 5. Group WebView2 Processes
         renderWebViewGroups(data.WebViewProcesses, allProcessesMap);
         
-        // 6. Render top memory hogs
+        // 6. Render top memory hogs (labels corrected below)
         renderMemoryHogs(data.AllProcesses);
         
         // 6.5 Render WSL virtualization section
@@ -319,46 +361,79 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderMemoryBar(mem) {
-        const total = mem.TotalPhysicalBytes;
-        
-        // Segments byte counts
+        // Mutually exclusive composition based on Visible RAM (installed = visible + hardware reserved)
+        const visible = mem.VisiblePhysicalBytes || mem.TotalPhysicalBytes;
+        const hwReserved = mem.HardwareReservedBytes || 0;
+        // Pools are detail metrics within In-Use, not additional top-level segments
         const segments = [
             { id: 'inuse', name: 'In-Use', bytes: mem.InUseBytes, className: 'seg-inuse', color: '#ec4899' },
-            { id: 'standby', name: 'Standby Cache', bytes: mem.StandbyBytes, className: 'seg-standby', color: '#6366f1' },
-            { id: 'nonpaged', name: 'Non-Paged Pool', bytes: mem.NonpagedPoolBytes, className: 'seg-nonpaged', color: '#f59e0b' },
-            { id: 'paged', name: 'Paged Pool', bytes: mem.PagedPoolBytes, className: 'seg-paged', color: '#10b981' },
-            { id: 'reserved', name: 'Hardware Reserved', bytes: mem.HardwareReservedBytes, className: 'seg-reserved', color: '#64748b' }
+            { id: 'standby', name: 'Standby', bytes: mem.StandbyBytes, className: 'seg-standby', color: '#6366f1' },
+            { id: 'modified', name: 'Modified', bytes: mem.ModifiedBytes || 0, className: 'seg-modified', color: '#8b5cf6' },
+            { id: 'free', name: 'Free/Zeroed', bytes: mem.FreeBytes != null ? mem.FreeBytes : Math.max(0, visible - (mem.InUseBytes||0) - (mem.StandbyBytes||0) - (mem.ModifiedBytes||0)), className: 'seg-free', color: '#e5e7eb' }
         ];
+        // Hardware reserved is shown separately as an installed-vs-visible fact, not part of the visible bar
+        // Validate invariants lightly and clamp
+        segments.forEach(s => { if (s.bytes < 0) s.bytes = 0; });
+        const visibleSum = segments.reduce((sum, s) => sum + s.bytes, 0);
+        // If sum exceeds visible due to rounding/provider, clamp free
+        if (visibleSum > visible && segments.find(s => s.id === 'free')) {
+            const freeSeg = segments.find(s => s.id === 'free');
+            freeSeg.bytes = Math.max(0, freeSeg.bytes - (visibleSum - visible));
+        }
         
-        // Calculate remaining free RAM
-        const accountedBytes = segments.reduce((sum, s) => sum + s.bytes, 0);
-        const freeBytes = Math.max(0, total - accountedBytes);
-        segments.push({ id: 'free', name: 'Free (Zeroed)', bytes: freeBytes, className: 'seg-free', color: '#1e293b' });
-        
-        // Calculate percentages
+        // Calculate percentages against visible; hardware reserved shown separately
         memoryBarChart.innerHTML = '';
         memoryLegendList.innerHTML = '';
         
         segments.forEach(seg => {
-            const pct = (seg.bytes / total) * 100;
-            if (pct <= 0.1) return; // skip tiny entries
+            if (!seg.bytes || seg.bytes <= 0) return;
+            const pct = (seg.bytes / visible) * 100;
+            if (pct <= 0.2) return;
             
-            // Insert segment bar
             const div = document.createElement('div');
             div.className = `memory-segment ${seg.className}`;
             div.style.width = `${pct}%`;
-            div.title = `${seg.name}: ${formatGB(seg.bytes)} (${pct.toFixed(1)}%)`;
+            div.title = `${seg.name}: ${formatGB(seg.bytes)} (${pct.toFixed(1)}% of visible)`;
             memoryBarChart.appendChild(div);
             
-            // Insert legend item
             const legend = document.createElement('div');
             legend.className = 'legend-item';
-            legend.innerHTML = `
-                <span class="legend-color" style="background-color: ${seg.color}"></span>
-                <span>${seg.name}: <strong>${formatGB(seg.bytes)}</strong> (${pct.toFixed(0)}%)</span>
-            `;
+            const colorSpan = document.createElement('span');
+            colorSpan.className = 'legend-color';
+            colorSpan.style.backgroundColor = seg.color;
+            const textSpan = document.createElement('span');
+            // Use textContent for values, allow strong for bytes via separate node
+            const strong = document.createElement('strong');
+            strong.textContent = formatGB(seg.bytes);
+            textSpan.append(`${seg.name}: `);
+            textSpan.appendChild(strong);
+            textSpan.append(` (${pct.toFixed(0)}%)`);
+            legend.appendChild(colorSpan);
+            legend.appendChild(textSpan);
             memoryLegendList.appendChild(legend);
         });
+        // Hardware reserved footnote
+        if (hwReserved > 0) {
+            const fr = document.createElement('div');
+            fr.className = 'legend-item';
+            fr.style.opacity = '0.85';
+            const c = document.createElement('span');
+            c.className = 'legend-color';
+            c.style.backgroundColor = '#64748b';
+            const t = document.createElement('span');
+            t.textContent = `Hardware reserved: ${formatGB(hwReserved)} (installed ${( (visible+hwReserved)/(1024*1024*1024)).toFixed(1)} GB)`;
+            fr.appendChild(c);
+            fr.appendChild(t);
+            memoryLegendList.appendChild(fr);
+        }
+        // Pool detail annotation (not in bar) — add to legend as info
+        const poolInfo = document.createElement('div');
+        poolInfo.className = 'legend-item';
+        poolInfo.style.fontSize = '0.78rem';
+        const pagedGB = (mem.PagedPoolBytes||0)/(1024*1024*1024);
+        const nonpagedGB = (mem.NonpagedPoolBytes||0)/(1024*1024*1024);
+        poolInfo.textContent = `Pools (within In-Use): paged ${pagedGB.toFixed(2)} GB, non-paged ${nonpagedGB.toFixed(2)} GB`;
+        memoryLegendList.appendChild(poolInfo);
     }
 
     function renderWebViewGroups(wvProcesses, allProcessesMap) {
@@ -419,11 +494,12 @@ document.addEventListener('DOMContentLoaded', () => {
         );
         
         if (filtered.length === 0) {
-            container.innerHTML = `
-                <div class="loading-state">
-                    <p>No host applications match the search query.</p>
-                </div>
-            `;
+            const empty = document.createElement('div');
+            empty.className = 'loading-state';
+            const p = document.createElement('p');
+            p.textContent = 'No host applications match the search query.';
+            empty.appendChild(p);
+            container.appendChild(empty);
             return;
         }
         
@@ -431,80 +507,97 @@ document.addEventListener('DOMContentLoaded', () => {
             const initials = group.name.replace('.exe', '').substring(0, 2).toUpperCase();
             
             const card = document.createElement('div');
-            card.className = `wv-group-card ${index === 0 ? 'expanded' : ''}`; // Expand first by default
+            card.className = `wv-group-card ${index === 0 ? 'expanded' : ''}`;
             
-            // Sort children processes by memory
             group.processes.sort((a, b) => b.WorkingSet - a.WorkingSet);
             
-            let childRowsHTML = '';
+            // Build header safely
+            const header = document.createElement('div');
+            header.className = 'wv-group-header';
+            header.tabIndex = 0;
+            header.setAttribute('role', 'button');
+            header.setAttribute('aria-expanded', index === 0 ? 'true' : 'false');
+            
+            const info = document.createElement('div');
+            info.className = 'wv-group-info';
+            const icon = document.createElement('div');
+            icon.className = 'wv-app-icon';
+            icon.textContent = initials;
+            const details = document.createElement('div');
+            details.className = 'wv-app-details';
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'wv-app-name';
+            nameSpan.textContent = group.name;
+            const pathSpan = document.createElement('span');
+            pathSpan.className = 'wv-app-path';
+            pathSpan.textContent = group.path || 'Process path unavailable';
+            details.appendChild(nameSpan);
+            details.appendChild(pathSpan);
+            info.appendChild(icon);
+            info.appendChild(details);
+            
+            const stats = document.createElement('div');
+            stats.className = 'wv-group-stats';
+            stats.innerHTML = `
+                <div class="wv-stat"><span class="label">Processes</span><span class="value">${group.processes.length}</span></div>
+                <div class="wv-stat"><span class="label">Total CPU</span><span class="value cpu">${group.totalCpu > 0 ? group.totalCpu.toFixed(1) + '%' : '0.0%'}</span></div>
+                <div class="wv-stat"><span class="label">Total RAM</span><span class="value mem">${(group.totalMem / (1024 * 1024)).toFixed(0)} MB</span></div>
+            `;
+            const arrow = document.createElement('div');
+            arrow.className = 'wv-expand-arrow';
+            arrow.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>`;
+            
+            header.appendChild(info);
+            header.appendChild(stats);
+            header.appendChild(arrow);
+            
+            const detailsWrap = document.createElement('div');
+            detailsWrap.className = 'wv-group-details';
+            const list = document.createElement('div');
+            list.className = 'wv-process-list';
             group.processes.forEach(proc => {
                 const roleInfo = getProcessRole(proc.CommandLine);
-                
-                childRowsHTML += `
-                    <div class="wv-process-row">
-                        <div class="wv-proc-identity">
-                            <span class="pid-badge">PID ${proc.PID}</span>
-                            <span class="role-badge role-${roleInfo.role}">${roleInfo.role}</span>
-                        </div>
-                        <div class="wv-proc-desc">
-                            ${roleInfo.desc}
-                        </div>
-                        <div class="wv-proc-metrics">
-                            <span class="wv-metric-val cpu">${proc.CPU > 0 ? proc.CPU.toFixed(1) + '%' : '0.0%'} CPU</span>
-                            <span class="wv-metric-val mem">${(proc.WorkingSet / (1024 * 1024)).toFixed(0)} MB</span>
-                        </div>
-                    </div>
-                `;
+                const row = document.createElement('div');
+                row.className = 'wv-process-row';
+                const identity = document.createElement('div');
+                identity.className = 'wv-proc-identity';
+                const pidBadge = document.createElement('span');
+                pidBadge.className = 'pid-badge';
+                pidBadge.textContent = `PID ${proc.PID}`;
+                const roleBadge = document.createElement('span');
+                roleBadge.className = `role-badge role-${roleInfo.role}`;
+                roleBadge.textContent = roleInfo.role;
+                identity.appendChild(pidBadge);
+                identity.appendChild(roleBadge);
+                const desc = document.createElement('div');
+                desc.className = 'wv-proc-desc';
+                desc.textContent = roleInfo.desc;
+                const metrics = document.createElement('div');
+                metrics.className = 'wv-proc-metrics';
+                const cpuSpan = document.createElement('span');
+                cpuSpan.className = 'wv-metric-val cpu';
+                cpuSpan.textContent = `${proc.CPU > 0 ? proc.CPU.toFixed(1) + '%' : '0.0%'} CPU`;
+                const memSpan = document.createElement('span');
+                memSpan.className = 'wv-metric-val mem';
+                memSpan.textContent = `${(proc.WorkingSet / (1024 * 1024)).toFixed(0)} MB`;
+                metrics.appendChild(cpuSpan);
+                metrics.appendChild(memSpan);
+                row.appendChild(identity);
+                row.appendChild(desc);
+                row.appendChild(metrics);
+                list.appendChild(row);
             });
+            detailsWrap.appendChild(list);
             
-            card.innerHTML = `
-                <div class="wv-group-header">
-                    <div class="wv-group-info">
-                        <div class="wv-app-icon">${initials}</div>
-                        <div class="wv-app-details">
-                            <span class="wv-app-name">${group.name}</span>
-                            <span class="wv-app-path">${group.path || 'Process path unavailable'}</span>
-                        </div>
-                    </div>
-                    <div class="wv-group-stats">
-                        <div class="wv-stat">
-                            <span class="label">Processes</span>
-                            <span class="value">${group.processes.length}</span>
-                        </div>
-                        <div class="wv-stat">
-                            <span class="label">Total CPU</span>
-                            <span class="value cpu">${group.totalCpu > 0 ? group.totalCpu.toFixed(1) + '%' : '0.0%'}</span>
-                        </div>
-                        <div class="wv-stat">
-                            <span class="label">Total RAM</span>
-                            <span class="value mem">${(group.totalMem / (1024 * 1024)).toFixed(0)} MB</span>
-                        </div>
-                    </div>
-                    <div class="wv-expand-arrow">
-                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <polyline points="6 9 12 15 18 9"></polyline>
-                        </svg>
-                    </div>
-                </div>
-                <div class="wv-group-details" style="${index === 0 ? 'max-height: 1200px' : ''}">
-                    <div class="wv-process-list">
-                        ${childRowsHTML}
-                    </div>
-                </div>
-            `;
+            card.appendChild(header);
+            card.appendChild(detailsWrap);
             
-            // Add click listener to toggle expand
-            const header = card.querySelector('.wv-group-header');
-            const details = card.querySelector('.wv-group-details');
-            
-            header.addEventListener('click', () => {
+            const toggle = () => {
                 const isExpanded = card.classList.toggle('expanded');
-                if (isExpanded) {
-                    details.style.maxHeight = '1200px';
-                } else {
-                    details.style.maxHeight = '0px';
-                }
-            });
+                header.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+            };
+            header.addEventListener('click', toggle);
+            header.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
             
             container.appendChild(card);
         });
@@ -612,56 +705,54 @@ document.addEventListener('DOMContentLoaded', () => {
             desc: 'Handles visual tray flyouts (calendar, notifications, volume). Safe to close, Windows will restart it as needed.'
         },
         'chrome': {
-            safety: 'safe',
+            safety: 'caution',
             title: 'Google Chrome Browser',
-            desc: 'A user application. Completely safe to close. Closing it will terminate your active web tabs and release significant memory.'
+            desc: 'User application. OS remains stable if closed, but unsaved tabs and form data will be lost. Use the browser itself to close it safely.'
         },
         'msedge': {
-            safety: 'safe',
+            safety: 'caution',
             title: 'Microsoft Edge Browser',
-            desc: 'A user application. Completely safe to close. Reclaims memory immediately.'
+            desc: 'User application. OS remains stable if closed, but unsaved tabs will be lost.'
         },
         'discord': {
-            safety: 'safe',
+            safety: 'caution',
             title: 'Discord Desktop client',
-            desc: 'User chat application. Completely safe to close.'
+            desc: 'User application — OS stability unaffected; closing may interrupt calls or unsaved messages.'
         },
         'teams': {
-            safety: 'safe',
+            safety: 'caution',
             title: 'Microsoft Teams',
-            desc: 'Collaboration application. Completely safe to close.'
+            desc: 'User application — OS stability unaffected; closing may drop calls or unsaved chats.'
         },
         'ms-teams': {
-            safety: 'safe',
+            safety: 'caution',
             title: 'Microsoft Teams',
-            desc: 'Collaboration application. Completely safe to close.'
+            desc: 'User application — OS stability unaffected; closing may drop calls.'
         },
         'slack': {
-            safety: 'safe',
+            safety: 'caution',
             title: 'Slack Desktop client',
-            desc: 'User chat application. Completely safe to close.'
+            desc: 'User application — OS stability unaffected; closing may miss messages until reopened.'
         },
         'spotify': {
-            safety: 'safe',
+            safety: 'caution',
             title: 'Spotify music player',
-            desc: 'Music streaming application. Completely safe to close.'
+            desc: 'User application — OS stability unaffected; playback will stop.'
         },
         'sysview': {
             safety: 'caution',
             title: 'SysView Diagnostics Server',
-            desc: 'This application itself! Closing it will stop the diagnostic server and close this dashboard.'
+            desc: 'This application itself — stopping it closes this dashboard.'
         }
     };
 
     function evaluateProcessSafety(proc) {
         const name = proc.Name.toLowerCase();
         
-        // 1. Check database
         if (processDatabase[name]) {
             return processDatabase[name];
         }
         
-        // 2. Classify by path/system characteristics
         const path = proc.Path ? proc.Path.toLowerCase() : '';
         
         if (path.includes('\\windows\\system32') || 
@@ -672,38 +763,35 @@ document.addEventListener('DOMContentLoaded', () => {
             name === 'services' || 
             name === 'smss') {
             
-            // System component
             const criticalList = ['conhost', 'taskhostw', 'wininit', 'smss', 'lsass', 'services'];
             if (criticalList.includes(name)) {
                 return {
                     safety: 'critical',
                     title: `Critical System Process (${proc.Name})`,
-                    desc: 'A critical Windows operating system process. Terminating this will cause system instability, user logouts, or force an immediate system restart.'
+                    desc: 'Critical Windows OS process. Terminating may cause system instability or restart — do not terminate from this dashboard.'
                 };
             }
             
             return {
                 safety: 'caution',
                 title: `Windows Background Service (${proc.Name})`,
-                desc: 'An auxiliary Windows system component or service. Generally safe to stop, but may temporarily disable core functionalities (printing, updates, settings sync) until restarted.'
+                desc: 'Windows system component. OS impact if stopped; may temporarily disable functionality until restarted. Guidance only — verify signer and service association.'
             };
         }
         
-        // 3. User application defaults
         const commonApps = ['code', 'steam', 'epicgameslauncher', 'galaxyclient', 'battle.net', 'origin', 'zoom', 'webex', 'outlook', 'excel', 'winword', 'powerpnt', 'notepad', 'cmd', 'powershell', 'taskmgr'];
         if (commonApps.includes(name) || path.includes('\\program files') || path.includes('\\appdata\\local')) {
             return {
-                safety: 'safe',
+                safety: 'caution',
                 title: `User Application (${proc.Name})`,
-                desc: 'A user-installed program, game launcher, or browser helper running in your user account. It is completely safe to close this application to release memory.'
+                desc: 'User-installed application. OS remains stable if closed, but unsaved work, sync, or backups may be interrupted. Guidance only — verify before action. This dashboard cannot terminate processes.'
             };
         }
         
-        // Generic Fallback
         return {
-            safety: 'safe',
-            title: `Application / Background Helper (${proc.Name})`,
-            desc: 'A background helper or user application. Generally completely safe to close if you are not currently actively using it.'
+            safety: 'caution',
+            title: `Unknown — investigate (${proc.Name})`,
+            desc: 'Unknown process — investigate signer, path, and service association before acting. Listed as guidance, not a safety guarantee. This dashboard cannot terminate processes.'
         };
     }
 
@@ -718,10 +806,12 @@ document.addEventListener('DOMContentLoaded', () => {
         topHogs.forEach(p => {
             const info = evaluateProcessSafety(p);
             
-            // Build the main row
             const trMain = document.createElement('tr');
             trMain.className = 'hog-row';
             trMain.setAttribute('data-pid', p.PID);
+            trMain.tabIndex = 0;
+            trMain.setAttribute('role', 'button');
+            trMain.setAttribute('aria-expanded', 'false');
             
             let badgeColor = '';
             if (info.safety === 'critical') badgeColor = 'safety-critical';
@@ -739,7 +829,7 @@ document.addEventListener('DOMContentLoaded', () => {
             trMain.innerHTML = `
                 <td>
                     <span class="safety-indicator ${badgeColor}"></span>
-                    <span class="hog-name">${p.Name}</span>
+                    <span class="hog-name"></span>
                     ${winLabel}
                 </td>
                 <td class="text-right hog-mono">${p.PID}</td>
@@ -747,8 +837,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td class="text-right hog-mono">${(p.WorkingSet / (1024 * 1024)).toFixed(0)} MB</td>
                 <td class="text-right hog-cpu ${cpuClass}">${p.CPU > 0 ? p.CPU.toFixed(1) + '%' : '0%'}</td>
             `;
+            // Assign dynamic name via textContent to avoid HTML injection
+            const nameSpan = trMain.querySelector('.hog-name');
+            if (nameSpan) nameSpan.textContent = p.Name;
             
-            // Build the detail row
+            // Build the detail row - use safe text for path
             const trDetail = document.createElement('tr');
             trDetail.className = 'hog-detail-row';
             
@@ -775,42 +868,43 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 statusIcon = `
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
                     </svg>
                 `;
-                statusLabel = 'User Process — Safe to Terminate';
+                statusLabel = 'Unknown — investigate';
             }
-            
             trDetail.innerHTML = `
                 <td colspan="5">
                     <div class="hog-detail-content">
                         <div class="hog-card ${info.safety}">
                             <div class="hog-status-header">
                                 ${statusIcon}
-                                <span>${info.title} · ${statusLabel}</span>
+                                <span class="hog-title"></span>
                             </div>
-                            <p>${info.desc}</p>
-                            ${p.Path ? `<p class="hog-path">Path: ${p.Path}</p>` : ''}
+                            <p class="hog-desc"></p>
+                            <p class="hog-path" style="display:${p.Path ? 'block' : 'none'}"></p>
                         </div>
                     </div>
                 </td>
             `;
-            // Add click listener to toggle expansion — CSS controls height
-            trMain.addEventListener('click', () => {
+            const titleEl = trDetail.querySelector('.hog-title');
+            if (titleEl) titleEl.textContent = `${info.title} \u00b7 ${statusLabel}`;
+            const descEl = trDetail.querySelector('.hog-desc');
+            if (descEl) descEl.textContent = info.desc;
+            const pathEl = trDetail.querySelector('.hog-path');
+            if (pathEl && p.Path) pathEl.textContent = `Path: ${p.Path}`;
+            // Add click/keyboard listener to toggle expansion — CSS controls height, aria reflects state
+            const toggleHog = () => {
                 const isExpanded = trMain.classList.contains('expanded');
-                
-                // Collapse all other hog rows
                 const expandedRows = memoryHogsTable.querySelectorAll('.hog-row.expanded');
-                expandedRows.forEach(row => {
-                    if (row !== trMain) row.classList.remove('expanded');
-                });
-                
-                // Toggle clicked row
-                if (isExpanded) trMain.classList.remove('expanded');
-                else trMain.classList.add('expanded');
-            });
-            
+                expandedRows.forEach(row => { if (row !== trMain) { row.classList.remove('expanded'); row.setAttribute('aria-expanded','false'); } });
+                if (isExpanded) { trMain.classList.remove('expanded'); trMain.setAttribute('aria-expanded','false'); }
+                else { trMain.classList.add('expanded'); trMain.setAttribute('aria-expanded','true'); }
+            };
+            trMain.addEventListener('click', toggleHog);
+            trMain.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleHog(); } });
             memoryHogsTable.appendChild(trMain);
             memoryHogsTable.appendChild(trDetail);
         });
@@ -819,49 +913,47 @@ document.addEventListener('DOMContentLoaded', () => {
     function runDiagnosticsEngine(mem, wvProcesses, allProcessesMap) {
         diagnosticInsightsContainer.innerHTML = '';
         const insights = [];
+        const visible = mem.VisiblePhysicalBytes || mem.TotalPhysicalBytes;
+        const elapsed = (mem.CPUSampleSeconds || 0.3);
 
-        // 1. Check Non-Paged Pool (Driver Leaks)
+        // 1. Non-paged pool — one sample cannot establish a leak; show evidence card
         const nonPagedPoolGB = mem.NonpagedPoolBytes / (1024 * 1024 * 1024);
-        if (nonPagedPoolGB > 1.5) {
+        const poolPct = visible ? (mem.NonpagedPoolBytes / visible * 100).toFixed(2) : '0';
+        if (nonPagedPoolGB > 1.2) {
             insights.push({
-                type: 'danger',
-                title: 'Kernel Non-Paged Pool Leak Detected!',
-                desc: `Your Non-Paged Pool is taking up **${nonPagedPoolGB.toFixed(2)} GB** of RAM. Drivers allocate memory here, and it cannot be paged to disk. Since this exceeds the standard limit of 1GB, it indicates a **driver memory leak**.`,
+                type: 'warning',
+                title: 'Elevated non-paged pool — investigate, not confirmed leak',
+                desc: `Observed: non-paged pool ${nonPagedPoolGB.toFixed(2)} GB (${poolPct}% of visible RAM) at ${new Date().toLocaleTimeString()}. One sample cannot establish a driver leak; pool size varies with RAM, workload, drivers, and uptime.`,
                 actions: [
-                    'Update Network (Wi-Fi/Ethernet) and GPU drivers directly from the chip manufacturer (Realtek, Intel, NVIDIA). Do not rely on Windows Update.',
-                    'Check for the Network Data Usage (NDU) leak. You can disable the NDU service in Registry: change <code>HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services\\Ndu\\Start</code> value to <code>4</code> and restart.'
+                    'Confidence: Low (single sample). Next safe checks: run RAMMap / PoolMon to identify pool tags, note driver versions, and compare after a clean reboot.',
+                    'If growth is sustained over 15–60 min under memory pressure, collect pool-tag evidence and update drivers from the vendor. Do not disable system components without tag evidence.'
                 ]
             });
         } else if (nonPagedPoolGB > 0.8) {
             insights.push({
-                type: 'warning',
-                title: 'Elevated Non-Paged Pool RAM',
-                desc: `Non-Paged Pool is currently at **${(nonPagedPoolGB * 1024).toFixed(0)} MB**. Keep an eye on this value. If it continues to grow after long uptime, a driver update is recommended.`,
-                actions: []
+                type: 'info',
+                title: 'Non-paged pool within elevated range — monitor trend',
+                desc: `Observed: ${ (nonPagedPoolGB*1024).toFixed(0)} MB (${poolPct}% of visible). No leak established from this snapshot; track trend.`,
+                actions: ['If you suspect growth, capture samples over time and compare pool tags before changing drivers.']
             });
         }
 
-        // 2. Explain Standby Cache (Reassurance)
+        // 2. Standby cache — factual
         const standbyGB = mem.StandbyBytes / (1024 * 1024 * 1024);
-        const totalGB = mem.TotalPhysicalBytes / (1024 * 1024 * 1024);
-        const inUseGB = mem.InUseBytes / (1024 * 1024 * 1024);
-        
         if (standbyGB > 8.0) {
             insights.push({
                 type: 'info',
-                title: 'Large Standby Cache (Normal Behavior)',
-                desc: `Windows is utilizing **${standbyGB.toFixed(1)} GB** of RAM for caching disk files (Standby list). **This is safe and expected**. It speeds up your computer. Task manager sometimes flags this incorrectly as 'used' memory, but Windows will free this instantly if your applications demand it.`,
+                title: 'Large standby cache — expected behavior',
+                desc: `Observed: ${standbyGB.toFixed(1)} GB standby (file cache). Windows keeps recently used files in RAM for speed and releases this memory immediately when an app needs it.`,
                 actions: [
-                    'If you feel it slows down games, you can use Microsoft Sysinternals **RAMMap** > Empty > Empty Standby List to clear it manually.',
-                    'Intelligent Standby List Cleaner (ISLC) is a reliable third-party utility that automates this clearance.'
+                    'No action required. If you need to clear for a benchmark, use RAMMap > Empty Standby List.'
                 ]
             });
         }
 
-        // 3. WebView2 Heavy Instances
+        // 3. WebView2 Heavy Instances — use summed working sets estimate note
         const wvMemMB = wvProcesses.reduce((sum, p) => sum + p.WorkingSet, 0) / (1024 * 1024);
         if (wvMemMB > 3000) {
-            // Find host with highest memory
             const hostMems = {};
             wvProcesses.forEach(p => {
                 const host = findHostApp(p, allProcessesMap);
@@ -870,58 +962,59 @@ document.addEventListener('DOMContentLoaded', () => {
             const topWvHost = Object.entries(hostMems).sort((a,b) => b[1] - a[1])[0];
             
             insights.push({
-                type: 'warning',
-                title: 'High WebView2 Memory Footprint',
-                desc: `WebView2 processes are consuming a total of **${wvMemMB.toFixed(0)} MB** of RAM. The biggest contributor is **${topWvHost[0]}** using **${(topWvHost[1] / (1024*1024)).toFixed(0)} MB**.`,
+                type: 'info',
+                title: 'High WebView2 summed working sets',
+                desc: `Observed: summed working sets ${wvMemMB.toFixed(0)} MB across ${wvProcesses.length} processes (shared pages may double-count). Top host: ${topWvHost[0]} ~${(topWvHost[1] / (1024*1024)).toFixed(0)} MB (estimate).`,
                 actions: [
-                    `Consider restarting <strong>${topWvHost[0]}</strong> to flush its embedded web pages and release memory.`,
-                    'Disable unused tabs, graphics acceleration, or hardware options inside the app settings (e.g. Teams, Discord) to lower WebView allocations.'
+                    `Consider restarting ${topWvHost[0]} to release embedded pages.`,
+                    'Check app settings for hardware acceleration or extra tabs.'
                 ]
             });
         }
 
-        // 4. WebView2 High CPU load
+        // 4. WebView2 CPU — disclose sample interval, avoid runaway claim from single sample
         const highCpuWv = wvProcesses.filter(p => p.CPU > 5.0);
         if (highCpuWv.length > 0) {
             const worst = highCpuWv.sort((a,b) => b.CPU - a.CPU)[0];
             const host = findHostApp(worst, allProcessesMap);
             const role = getProcessRole(worst.CommandLine);
             insights.push({
-                type: 'danger',
-                title: `WebView2 Runaway CPU Detected!`,
-                desc: `WebView2 Process **PID ${worst.PID}** is consuming **${worst.CPU.toFixed(1)}% CPU**. This is a **${role.role}** process hosted by **${host.name}**. This explains the persistent CPU drain.`,
+                type: 'warning',
+                title: `WebView2 CPU observed at ${worst.CPU.toFixed(1)}% (sample ${elapsed.toFixed(2)}s)`,
+                desc: `Observed: PID ${worst.PID} (${role.role}) in ${host.name} at ${worst.CPU.toFixed(1)}% over a ${elapsed.toFixed(2)}s window (noisy; requires consecutive samples for confidence). Low confidence from single sample.`,
                 actions: [
-                    `The web page hosted inside <strong>${host.name}</strong> is executing a heavy script loop or graphics rendering. Restarting this application is recommended.`,
-                    `If it's Outlook or Teams, check if a specific add-in, website, or shared widget is running.`
+                    `If sustained, the page in ${host.name} may be busy. Restart the host and re-sample.`,
+                    'For Teams/Outlook, check add-ins or widgets.'
                 ]
             });
         }
 
-        // 5. General RAM limit warnings
-        const usedPct = ((totalGB - (mem.AvailableBytes / (1024*1024*1024))) / totalGB) * 100;
+        // 5. General RAM pressure — based on visible, show evidence
+        const usedPct = visible ? ((visible - mem.AvailableBytes) / visible * 100) : 0;
         if (usedPct > 88) {
+            const inUseGB = (mem.InUseBytes / (1024*1024*1024)).toFixed(1);
             insights.push({
                 type: 'warning',
-                title: 'Physical RAM is Almost Saturated',
-                desc: `Your overall memory usage is at **${usedPct.toFixed(0)}%** (${(inUseGB).toFixed(1)} GB actively in use). If you experience stuttering, Windows is swapping memory pages to the disk pagefile.`,
+                title: `Memory pressure elevated — ${usedPct.toFixed(0)}% of visible RAM in use`,
+                desc: `Observed: ${inUseGB} GB in use, ${ (mem.AvailableBytes/(1024*1024*1024)).toFixed(1)} GB available (visible ${(visible/(1024*1024*1024)).toFixed(1)} GB). Under pressure Windows may page to disk. Single-sample; confidence medium.`,
                 actions: [
-                    'Look at the Top Non-WebView Hogs list to find background tools (like Docker, databases, or game launchers) that can be closed.',
-                    'Check if your browser has many open tabs and enable Memory Saver mode in Chrome/Edge.'
+                    'Sort the Processes table by Private commit to find top contributors.',
+                    'Close or pause heavy workloads; check browser Memory Saver.'
                 ]
             });
         }
 
-        // If no anomalies found, show success
+        // If no anomalies found
         if (insights.length === 0) {
             insights.push({
                 type: 'success',
-                title: 'All Memory Systems Healthy!',
-                desc: 'Your kernel pools, standby cache, and WebView2 instances are operating within normal thresholds. RAM is being efficiently shared, and no driver leaks or runaway CPU processes are detected.',
+                title: 'No thresholds exceeded in this sample',
+                desc: 'Observed sample is within current thresholds. This is a single-point view; sustained conditions require history.',
                 actions: []
             });
         }
 
-        // Render to DOM
+        // Render to DOM — safe text handling
         insights.forEach(ins => {
             const div = document.createElement('div');
             div.className = `insight-item ${ins.type}`;
@@ -1001,35 +1094,62 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         
-        // Render distros
+        // Render distros — use textContent for names/versions/distro strings
         wslDistroList.innerHTML = '';
         if (wslData && wslData.Distros && wslData.Distros.length > 0) {
             wslData.Distros.forEach(distro => {
                 const row = document.createElement('div');
                 row.className = 'wsl-distro-row';
                 
-                const isRunning = distro.State.toLowerCase() === 'running';
+                const isRunning = String(distro.State).toLowerCase() === 'running';
                 const stateClass = isRunning ? 'wsl-state-running' : 'wsl-state-stopped';
                 
-                row.innerHTML = `
-                    <div class="wsl-distro-name-container">
-                        <span class="wsl-distro-name">${distro.Name}</span>
-                        ${distro.Default ? '<span class="wsl-default-badge">Default</span>' : ''}
-                        <span class="wsl-distro-version">v${distro.Version}</span>
-                    </div>
-                    <span class="wsl-state-badge ${stateClass}">${distro.State}</span>
-                `;
+                const left = document.createElement('div');
+                left.className = 'wsl-distro-name-container';
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'wsl-distro-name';
+                nameSpan.textContent = distro.Name;
+                left.appendChild(nameSpan);
+                if (distro.Default) {
+                    const badge = document.createElement('span');
+                    badge.className = 'wsl-default-badge';
+                    badge.textContent = 'Default';
+                    left.appendChild(badge);
+                }
+                const verSpan = document.createElement('span');
+                verSpan.className = 'wsl-distro-version';
+                verSpan.textContent = `v${distro.Version}`;
+                left.appendChild(verSpan);
+                
+                const stateBadge = document.createElement('span');
+                stateBadge.className = `wsl-state-badge ${stateClass}`;
+                stateBadge.textContent = distro.State;
+                
+                row.appendChild(left);
+                row.appendChild(stateBadge);
                 wslDistroList.appendChild(row);
             });
         } else {
-            wslDistroList.innerHTML = `
-                <div class="wsl-empty">No WSL distros registered (but vmmem process is running, likely starting up or shutting down).</div>
-            `;
+            const empty = document.createElement('div');
+            empty.className = 'wsl-empty';
+            empty.textContent = 'No WSL distros registered (but vmmem process is running, likely starting up or shutting down).';
+            wslDistroList.appendChild(empty);
         }
-        
-        // Render config status — factual, not inferred cap
+        // Render config status — support parsed Config object or legacy ConfigExists
         wslConfigStatus.innerHTML = '';
-        if (wslData && wslData.ConfigExists) {
+        const cfg = wslData && (wslData.Config || null);
+        if (cfg && cfg.exists) {
+            if (cfg.valid === true && cfg.memory) {
+                wslConfigStatus.className = 'wsl-config-status exists';
+                wslConfigStatus.textContent = `.wslconfig sets memory=${cfg.memory} (${cfg.rawMemory}) at ${cfg.source} — cap is configured.`;
+            } else if (cfg.valid === false) {
+                wslConfigStatus.className = 'wsl-config-status missing';
+                wslConfigStatus.textContent = `.wslconfig found at ${cfg.source} but memory value "${cfg.rawMemory}" is invalid. Will not cap memory.`;
+            } else {
+                wslConfigStatus.className = 'wsl-config-status exists';
+                wslConfigStatus.textContent = `.wslconfig found at ${cfg.source} but no memory= under [wsl2]. Does not cap memory.`;
+            }
+        } else if (wslData && wslData.ConfigExists) {
             wslConfigStatus.className = 'wsl-config-status exists';
             wslConfigStatus.innerHTML = '<strong>.wslconfig found</strong> in your profile folder. Check that it contains a valid <code>memory=</code> value under <code>[wsl2]</code>; an empty or unrelated file does not cap memory.';
         } else {
@@ -1041,27 +1161,39 @@ document.addEventListener('DOMContentLoaded', () => {
     // Attach listeners
     refreshBtn.addEventListener('click', grabSnapshot);
     
-    // WSL Shutdown Click Listener
+    // WSL Shutdown — capability token, origin-checked, confirmation listing distros
     const wslShutdownBtn = document.getElementById('wsl-shutdown-btn');
     wslShutdownBtn.addEventListener('click', async () => {
+        const token = await ensureToken();
+        if (!token) { alert('Missing capability token — reload the page.'); return; }
+        // Build confirmation listing running distros
+        const docs = (currentData && currentData.WSL && currentData.WSL.Distros) ? currentData.WSL.Distros.filter(d => String(d.State).toLowerCase()==='running').map(d=>d.Name).join(', ') : '';
+        const distroList = docs || 'no running distros detected (VM may still hold memory)';
+        const msg = `Shut down WSL now?\n\nRunning: ${distroList}\n\nThis will immediately stop all WSL distributions, Docker workloads, and any unsaved work inside WSL. Memory will be reclaimed after shutdown.\n\nProceed?`;
+        if (!confirm(msg)) return;
         wslShutdownBtn.disabled = true;
         const origText = wslShutdownBtn.querySelector('span').textContent;
         wslShutdownBtn.querySelector('span').textContent = 'Releasing WSL Memory...';
         
         try {
-            const res = await fetch('/api/wsl/shutdown', { method: 'POST' });
-            if (!res.ok) throw new Error('WSL shutdown API failed');
+            const res = await fetch('/api/wsl/shutdown', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-SysView-Token': token },
+                body: JSON.stringify({ confirm: true })
+            });
+            if (!res.ok) {
+                const txt = await res.text();
+                throw new Error(`WSL shutdown failed (${res.status}): ${txt.slice(0,400)}`);
+            }
             
-            // Wait 1.5 seconds for WSL to complete teardown
             await new Promise(resolve => setTimeout(resolve, 1500));
             
         } catch (err) {
             console.error('Error shutting down WSL:', err);
-            alert('Failed to shutdown WSL. Try running "wsl --shutdown" in an elevated PowerShell terminal.');
+            alert(`Failed to shutdown WSL: ${err.message}\nTry running "wsl --shutdown" in an elevated PowerShell terminal.`);
         } finally {
             wslShutdownBtn.querySelector('span').textContent = origText;
             wslShutdownBtn.disabled = false;
-            // Grab a fresh snapshot to update the memory bar
             grabSnapshot();
         }
     });
