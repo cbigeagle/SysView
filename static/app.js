@@ -39,7 +39,7 @@ if (typeof module !== 'undefined' && module.exports) { module.exports.buildExpor
 
 // H1T4: pure comparator — stable sort mimic, string for name, numeric for others
 function sortProcesses(list, key, dir){
-  const get={name:p=>p.Name.toLowerCase(), pid:p=>p.PID, private:p=>p.PrivateMemory, ws:p=>p.WorkingSet, cpu:p=>p.CPU}[key];
+  const get={name:p=>p.Name.toLowerCase(), pid:p=>p.PID, private:p=>p.PrivateMemory, ws:p=>p.WorkingSet, cpu:p=>p.CPU, ioRead:p=>p.IOReadBytes||0, ioWrite:p=>p.IOWriteBytes||0, net:p=>p.TcpConnectionCount||0, startupName:p=>(p.Name||'').toLowerCase(), startupLocation:p=>(p.Location||'').toLowerCase()}[key];
   if(!get) return [...list];
   return [...list].sort((a,b)=>{
     const av=get(a), bv=get(b);
@@ -127,7 +127,7 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     const tabPanels = [...document.querySelectorAll('[data-panel]')];
     let _activeTab = null;
     function activateTab(name){
-      const valid = ['overview','processes','webview','wsl'];
+      const valid = ['overview','processes','webview','wsl','storage','startup'];
       if(!valid.includes(name)) name='overview';
       _activeTab = name;
       tabBtns.forEach(b=>{ const on=b.dataset.tab===name; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; });
@@ -153,7 +153,7 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     (function initTab(){
       let saved=null; try{ saved = localStorage.getItem('sysview-tab'); }catch{}
       const hash = (location.hash||'').replace('#','').toLowerCase();
-      const valid=['overview','processes','webview','wsl'];
+      const valid=['overview','processes','webview','wsl','storage','startup'];
       let initial='overview';
       if(valid.includes(hash)) initial=hash;
       else if(valid.includes(saved)) initial=saved;
@@ -549,6 +549,12 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
         
         // 6.5 Render WSL virtualization section
         renderWSLSection(data.WSL, data.AllProcesses);
+
+        // 6.6 Volumes
+        renderVolumes(data.Volumes || []);
+
+        // 6.7 Startup
+        renderStartup(data.Startup || []);
         
         // 7. Run diagnostics recommendations engine
         runDiagnosticsEngine(mem, data.WebViewProcesses, allProcessesMap);
@@ -1020,6 +1026,9 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
             }
             
             const cpuClass = p.CPU > 0 ? 'hog-cpu--active' : 'hog-cpu--idle';
+            const ioReadMB = ((p.IOReadBytes||0)/(1024*1024)).toFixed(1);
+            const ioWriteMB = ((p.IOWriteBytes||0)/(1024*1024)).toFixed(1);
+            const connCount = p.TcpConnectionCount||0;
             trMain.innerHTML = `
                 <td>
                     <span class="safety-indicator ${badgeColor}"></span>
@@ -1030,10 +1039,18 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
                 <td class="text-right hog-mem">${(p.PrivateMemory / (1024 * 1024)).toFixed(0)} MB</td>
                 <td class="text-right hog-mono">${(p.WorkingSet / (1024 * 1024)).toFixed(0)} MB</td>
                 <td class="text-right hog-cpu ${cpuClass}">${p.CPU > 0 ? p.CPU.toFixed(1) + '%' : '0%'}</td>
+                <td class="text-right hog-mono hog-io"></td>
+                <td class="text-right hog-mono hog-io"></td>
+                <td class="text-right"><span class="conn-badge"></span></td>
             `;
-            // Assign dynamic name via textContent to avoid HTML injection
+            // Assign dynamic values via textContent to avoid HTML injection
             const nameSpan = trMain.querySelector('.hog-name');
             if (nameSpan) nameSpan.textContent = p.Name;
+            const ioCells = trMain.querySelectorAll('.hog-io');
+            if(ioCells[0]) ioCells[0].textContent = ioReadMB + ' MB';
+            if(ioCells[1]) ioCells[1].textContent = ioWriteMB + ' MB';
+            const connBadge = trMain.querySelector('.conn-badge');
+            if(connBadge) connBadge.textContent = String(connCount);
             
             // Build the detail row - use safe text for path
             const trDetail = document.createElement('tr');
@@ -1070,7 +1087,7 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
                 statusLabel = 'Unknown — investigate';
             }
             trDetail.innerHTML = `
-                <td colspan="5">
+                <td colspan="8">
                     <div class="hog-detail-content">
                         <div class="hog-card ${info.safety}">
                             <div class="hog-status-header">
@@ -1260,6 +1277,151 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
         });
     }
 
+    // H2T3: Volumes panel
+    function renderVolumes(volumes){
+        const c = document.getElementById('volumes-container');
+        if(!c) return;
+        c.innerHTML='';
+        if(!volumes || volumes.length===0){
+            const empty=document.createElement('div');
+            empty.className='wsl-empty';
+            empty.textContent='No volumes reported.';
+            c.appendChild(empty);
+            return;
+        }
+        volumes.forEach(v=>{
+            const size = v.SizeBytes||0;
+            const free = v.FreeBytes||0;
+            const used = size>0 ? Math.max(0, size-free) : 0;
+            const pct = size>0 ? Math.min(100, Math.max(0, (used/size)*100)) : 0;
+            const health = (v.HealthStatus||'OK').toString();
+            const isWarn = health.toLowerCase()!== 'ok' && health.toLowerCase()!== 'healthy';
+            const lowSpace = size>0 && (free/size) < 0.1;
+            const card=document.createElement('div');
+            card.className='volume-card';
+            const head=document.createElement('div');
+            head.className='volume-head';
+            const label=document.createElement('span');
+            label.className='volume-label';
+            label.textContent=(v.DeviceID||'Volume') + (v.Label ? ' (' + v.Label + ')' : '');
+            const badge=document.createElement('span');
+            badge.className = isWarn ? 'health-badge health-warn' : 'health-badge health-ok';
+            badge.textContent = health;
+            head.appendChild(label);
+            head.appendChild(badge);
+            const barWrap=document.createElement('div');
+            barWrap.className='volume-bar';
+            const fill=document.createElement('div');
+            fill.className='volume-fill' + (lowSpace ? ' low' : '');
+            fill.style.width=pct.toFixed(1)+'%';
+            fill.title=pct.toFixed(1)+'% used';
+            barWrap.appendChild(fill);
+            const meta=document.createElement('div');
+            meta.className='volume-meta';
+            const freeGB=(free/(1024*1024*1024)).toFixed(2);
+            const usedGB=(used/(1024*1024*1024)).toFixed(2);
+            const sizeGB=(size/(1024*1024*1024)).toFixed(2);
+            const fs=document.createElement('span');
+            fs.textContent=(v.FileSystem||'') + ' ' + (v.DriveType||'');
+            const nums=document.createElement('span');
+            nums.textContent=freeGB+' GB free / '+usedGB+' GB used of '+sizeGB+' GB ('+pct.toFixed(0)+'%)';
+            meta.appendChild(fs);
+            meta.appendChild(nums);
+            card.appendChild(head);
+            card.appendChild(barWrap);
+            card.appendChild(meta);
+            if(lowSpace){
+                const warn=document.createElement('div');
+                warn.className='insight-item warning';
+                warn.style.marginTop='0.5rem';
+                const ic=document.createElement('div');
+                ic.className='insight-icon';
+                ic.textContent='!';
+                const cc=document.createElement('div');
+                cc.className='insight-content';
+                const h=document.createElement('h4');
+                h.textContent='Low space';
+                const pp=document.createElement('p');
+                pp.textContent='Less than 10% free on ' + (v.DeviceID||'this volume') + '.';
+                cc.appendChild(h);
+                cc.appendChild(pp);
+                warn.appendChild(ic);
+                warn.appendChild(cc);
+                card.appendChild(warn);
+            }
+            c.appendChild(card);
+        });
+    }
+    if(typeof window!=="undefined") window.renderVolumes=renderVolumes;
+
+    // H2T4: Startup panel
+    let _startupData=[];
+    let _startupSortKey='startupName';
+    let _startupSortDir='asc';
+    function renderStartup(list){
+        _startupData = Array.isArray(list) ? list.slice() : [];
+        _renderStartupFiltered();
+    }
+    function _renderStartupFiltered(){
+        const tbody=document.getElementById('startup-table');
+        const filterEl=document.getElementById('startup-filter');
+        if(!tbody) return;
+        const q = (filterEl && filterEl.value ? filterEl.value.toLowerCase().trim() : '');
+        let filtered=_startupData.filter(e=>{
+            if(!q) return true;
+            return (e.Name||'').toLowerCase().includes(q) || (e.Command||'').toLowerCase().includes(q) || (e.Location||'').toLowerCase().includes(q) || (e.User||'').toLowerCase().includes(q);
+        });
+        filtered = sortProcesses(filtered, _startupSortKey, _startupSortDir);
+        tbody.innerHTML='';
+        if(filtered.length===0){
+            const tr=document.createElement('tr');
+            const td=document.createElement('td');
+            td.colSpan=4;
+            td.className='text-center';
+            td.textContent = _startupData.length===0 ? 'No startup entries reported.' : 'No entries match filter.';
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+            return;
+        }
+        filtered.forEach(e=>{
+            const tr=document.createElement('tr');
+            const tdName=document.createElement('td');
+            tdName.textContent=e.Name||'';
+            const tdLoc=document.createElement('td');
+            const badge=document.createElement('span');
+            const loc=(e.Location||'').toString();
+            let locClass='startup-badge';
+            const ll=loc.toLowerCase();
+            if(ll.includes('registry')) locClass+=' startup-registry';
+            else if(ll.includes('startup folder') || ll.includes('startup')) locClass+=' startup-folder';
+            else if(ll.includes('service')) locClass+=' startup-service';
+            badge.className=locClass;
+            badge.textContent=loc||'Unknown';
+            tdLoc.appendChild(badge);
+            const tdCmd=document.createElement('td');
+            tdCmd.className='hog-mono';
+            tdCmd.style.maxWidth='360px';
+            tdCmd.style.overflow='hidden';
+            tdCmd.style.textOverflow='ellipsis';
+            tdCmd.style.whiteSpace='nowrap';
+            tdCmd.textContent=e.Command||'';
+            tdCmd.title=e.Command||'';
+            const tdUser=document.createElement('td');
+            tdUser.textContent=e.User||'';
+            tr.appendChild(tdName);
+            tr.appendChild(tdLoc);
+            tr.appendChild(tdCmd);
+            tr.appendChild(tdUser);
+            tbody.appendChild(tr);
+        });
+        document.querySelectorAll('th[data-sort^="startup"]').forEach(th=>{
+            const k=th.dataset.sort;
+            if(k===_startupSortKey) th.setAttribute('aria-sort', _startupSortDir==='asc' ? 'ascending' : 'descending');
+            else th.setAttribute('aria-sort','none');
+        });
+    }
+    if(typeof window!=="undefined"){ window.renderStartup=renderStartup; window._renderStartupFiltered=_renderStartupFiltered; }
+
     // Render WSL Virtualization Section
     function renderWSLSection(wslData, allProcesses) {
         const wslDrilldown = document.getElementById('wsl-drilldown');
@@ -1400,27 +1562,45 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
             displayFilteredWebViewGroups();
         }, 150);
     });
-    // H1T4: sortable hog headers — data-sort, aria-sort, re-render
+    // H2T4: startup filter debounce
+    const startupFilter = document.getElementById('startup-filter');
+    let startupSearchTimeout=null;
+    if(startupFilter){
+        startupFilter.addEventListener('input', ()=>{
+            clearTimeout(startupSearchTimeout);
+            startupSearchTimeout=setTimeout(()=>{ _renderStartupFiltered(); }, 150);
+        });
+    }
+    // H1T4+H2: sortable headers — data-sort, aria-sort, re-render
     const hogTable = document.querySelector('table thead');
     function updateHogSortUI(){
-      document.querySelectorAll('th[data-sort]').forEach(th=>{
+      document.querySelectorAll('#tab-processes th[data-sort]').forEach(th=>{
         const k=th.dataset.sort;
         if(k===hogSortKey) th.setAttribute('aria-sort', hogSortDir==='asc' ? 'ascending' : 'descending');
         else th.setAttribute('aria-sort','none');
       });
     }
     document.querySelectorAll('th[data-sort]').forEach(th=>{
+      const key=th.dataset.sort;
+      const isStartup = key && key.startsWith('startup');
       const handler = ()=>{
-        const key=th.dataset.sort;
-        if(hogSortKey===key){ hogSortDir = hogSortDir==='asc' ? 'desc' : 'asc'; }
-        else { hogSortKey=key; hogSortDir = (key==='name' ? 'asc' : 'desc'); }
-        updateHogSortUI();
-        if(_lastAllProcesses) renderMemoryHogs(_lastAllProcesses);
+        if(isStartup){
+            if(_startupSortKey===key){ _startupSortDir = _startupSortDir==='asc' ? 'desc' : 'asc'; }
+            else { _startupSortKey=key; _startupSortDir='asc'; }
+            _renderStartupFiltered();
+        } else {
+            if(hogSortKey===key){ hogSortDir = hogSortDir==='asc' ? 'desc' : 'asc'; }
+            else { hogSortKey=key; hogSortDir = (key==='name' ? 'asc' : 'desc'); }
+            updateHogSortUI();
+            if(_lastAllProcesses) renderMemoryHogs(_lastAllProcesses);
+        }
       };
       th.addEventListener('click', handler);
       th.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); handler(); }});
     });
     updateHogSortUI();
+    // init startup header aria-sort
+    _renderStartupFiltered();
     // H1T3: history controls — interval + pause + auto-refresh wiring
     if(historyIntervalSelect){
         historyIntervalSelect.addEventListener('change', () => {
