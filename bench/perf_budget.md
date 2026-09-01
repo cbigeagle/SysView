@@ -2,23 +2,23 @@
 
 Baseline: H1 (commit 03fadd2 base, post-H1T7). H2 proposals MUST publish delta vs `Current (H1)`.
 
-| Metric | Budget | Current (H1) | Current (H2) | H2 target |
-|--------|--------|-------------|-------------|-----------|
-| Snapshot latency p50 (loopback, `GET /api/snapshot`) | < 800 ms | not measured live; validation ~15 µs/op (see below); p50 budget untested at H1 (fixture 1 proc) | validation ~23.3 µs/op (see Current H2); p50 live untested — est. <900 ms with 4 new providers | < 900 ms after disk/net providers |
-| Snapshot JSON (599 procs) | < 1.2 MB | 1.5 KB fixture (1 proc; `testdata/envelope_ok.json`); ~0.8 MB est. live 599 procs (extrapolated) | **2.76 KB fixture (1 proc, schemaVersion 2 + diskio/network/volumes/startup)**; ~1.0 MB est. live 599 procs (extrapolated, +~25% for new providers); budget headroom intact | < 1.5 MB after 4 providers |
-| JSON validation allocs (`BenchmarkValidateEnvelope`) | < 5 allocs/op | **107 allocs/op, 6488 B/op, ~15.1 µs/op** (`BenchmarkValidateEnvelope-16 78254 15135 ns/op 6488 B/op 107 allocs/op` on AMD Ryzen 7 9700X) — exceeds budget; optimization candidate for H2 | **128 allocs/op, 9280 B/op, ~23.3 µs/op** (`BenchmarkValidateEnvelope-16 51504 23333 ns/op 9280 B/op 128 allocs/op` on AMD Ryzen 7 9700X; earlier run 49846 24998 ns/op 9280 B/op 128 allocs/op) — +21 allocs, +2792 B, +~8 µs vs H1; budget still exceeded (flat target not met — see Notes) | flat (keep ≤107 or reduce to <5) |
-| Go vet / node --check | pass | **pass** (`go vet ./...` 0, `node --check static/app.js` 0, 2026-09-01) | **pass** (`go vet ./...` 0, `node --check static/app.js` 0, 2026-09-01 — re-verified H2T5) | pass |
-| HistoryStore 450 slots mem (JS heap) | < 2 MB | est. **~0.7–0.9 MB** fixture window (1.5 KB ×450 ≈0.68 MB + ~1.2× JS overhead); live 0.8MB×window capped by ring eviction; DevTools not measured | est. **~1.5 MB** fixture window (2.76 KB ×450 ≈1.24 MB + ~1.2× JS overhead ≈1.49 MB); live ~1.0 MB×window capped by ring; still <5 MB H2 budget | < 5 MB |
-| Export (redacted) size | ~ same as snapshot | **~1.5 KB + exportedAt** (≈ snapshot + ~40 B; redacted CommandLine `[redacted]` parity) | **~2.76 KB + exportedAt** (≈ snapshot + ~40 B; redacted CommandLine + Startup.Command `[redacted]` parity; `Network.TcpConnections` kept verbatim — no secrets) | — |
+| Metric | Budget | Current (H1) | Current (H2) | Current (H3) | H3 target |
+|--------|--------|-------------|-------------|-------------|-----------|
+| Snapshot latency p50 (loopback, `GET /api/snapshot`) | < 800 ms | not measured live; validation ~15 µs/op (see below); p50 budget untested at H1 (fixture 1 proc) | validation ~23.3 µs/op (see Current H2); p50 live untested — est. <900 ms with 4 new providers | validation ~29.6–30.6 µs/op (see Current H3); p50 live untested — est. <900 ms with 7 providers (H2 4 + H3 3) | < 900 ms |
+| Snapshot JSON (599 procs) | < 1.2 MB | 1.5 KB fixture (1 proc; `testdata/envelope_ok.json`); ~0.8 MB est. live 599 procs (extrapolated) | **2.76 KB fixture (1 proc, schemaVersion 2 + diskio/network/volumes/startup)**; ~1.0 MB est. live 599 procs (extrapolated, +~25% for new providers); budget headroom intact | **3.37 KB fixture (1 proc, schemaVersion 3 + runtimegroups/sensors/docker)**; ~1.2 MB est. live 599 procs (extrapolated, +22% vs H2); budget headroom intact (<1.5 MB) | < 1.5 MB |
+| JSON validation allocs (`BenchmarkValidateEnvelope`) | < 5 allocs/op | **107 allocs/op, 6488 B/op, ~15.1 µs/op** (`BenchmarkValidateEnvelope-16 78254 15135 ns/op 6488 B/op 107 allocs/op` on AMD Ryzen 7 9700X) — exceeds budget; optimization candidate for H2 | **128 allocs/op, 9280 B/op, ~23.3 µs/op** (`BenchmarkValidateEnvelope-16 51504 23333 ns/op 9280 B/op 128 allocs/op` on AMD Ryzen 7 9700X; earlier run 49846 24998 ns/op 9280 B/op 128 allocs/op) — +21 allocs, +2792 B, +~8 µs vs H1; budget still exceeded (flat target not met — see Notes) | **148 allocs/op, 11856 B/op, ~29.6–30.6 µs/op** (`BenchmarkValidateEnvelope-16 40204 30562 ns/op 11856 B/op 148 allocs/op`; rerun 42474 29574 ns/op 11856 B/op 148 allocs/op on AMD Ryzen 7 9700X, Go 1.26.5) — +20 allocs, +2576 B, +~6–7 µs vs H2; flat 128 carry still exceeded — see Notes | flat (keep ≤128 or reduce to <5) |
+| Go vet / node --check | pass | **pass** (`go vet ./...` 0, `node --check static/app.js` 0, 2026-09-01) | **pass** (`go vet ./...` 0, `node --check static/app.js` 0, 2026-09-01 — re-verified H2T5) | **pass** (`go vet ./...` 0, `node --check static/app.js` 0, 2026-09-01 — re-verified H3T4) | pass |
+| HistoryStore 450 slots mem (JS heap) | < 2 MB | est. **~0.7–0.9 MB** fixture window (1.5 KB ×450 ≈0.68 MB + ~1.2× JS overhead); live 0.8MB×window capped by ring eviction; DevTools not measured | est. **~1.5 MB** fixture window (2.76 KB ×450 ≈1.24 MB + ~1.2× JS overhead ≈1.49 MB); live ~1.0 MB×window capped by ring; still <5 MB H2 budget | est. **~1.8 MB** fixture window (3.37 KB ×450 ≈1.52 MB + ~1.2× JS overhead ≈1.82 MB); live ~1.2 MB×window capped by ring; still <5 MB H3 budget | < 5 MB |
+| Export (redacted) size | ~ same as snapshot | **~1.5 KB + exportedAt** (≈ snapshot + ~40 B; redacted CommandLine `[redacted]` parity) | **~2.76 KB + exportedAt** (≈ snapshot + ~40 B; redacted CommandLine + Startup.Command `[redacted]` parity; `Network.TcpConnections` kept verbatim — no secrets) | **~3.37 KB + exportedAt** (≈ snapshot + ~40 B; redacted CommandLine + Startup.Command `[redacted]` parity; RuntimeGroups/Sensors/Docker kept verbatim — no secrets, shape preserved) | — |
 
 ## Notes
 
-- **Snapshot latency p50**: loopback `GET /api/snapshot` with no extra providers, concurrency cap 2, 12s timeout. Measure with `Measure-Command { Invoke-RestMethod http://localhost:22880/api/snapshot }` p50 over 20 runs. H1 collector is `snapshot.ps1` (memory + processes + WSL stub). H2 adding disk/net/volumes/startup may add ~50–100ms each; budget relaxes to 900ms.
-- **Snapshot JSON size**: raw response bytes. Fixture `testdata/envelope_ok.json` is ~2.76 KB (1 proc stub, H2); extrapolate or capture a real 599-proc snapshot. H1 target ~0.8MB live; H2 with 4 providers ~1.5MB ceiling relates to wire + `HistoryStore` clone cost. H2 fixture grew +1.25 KB (+83%) for Network/Volumes/Startup/IO fields — well within 1.5 MB ceiling even extrapolated to 599 procs (~1.0 MB est.).
-- **JSON validation allocs**: from `go test -bench=BenchmarkValidateEnvelope -benchmem .` — `allocs/op` and `B/op`. Validates envelope shape (`data.Memory.VisiblePhysicalBytes` etc.) via `validateEnvelope`. Budget <5 allocs/op keeps GC pressure flat on auto-refresh (2s interval). H2 delta: +21 allocs (+19.6%), +2792 B (+43%), +8.2 µs (+54%) reflects larger v2 fixture (extra structs validated). Still exceeds <5 budget — optimization candidate carried to H3; H2 gate is "flat or improve" — regression noted, not blocking per Global Constraints (flat or improve is target, not hard gate).
-- **Go vet / node --check**: `go vet ./...` and `node --check static/app.js` both pass at H1 and H2. Any H2 change that breaks them blocks merge.
-- **HistoryStore 450 slots**: bounded ring buffer (15 min @ 2s interval = 450 envelopes). Each slot holds `{at, envelope}`; estimate `snapshot JSON bytes × 450 × ~1.2`. H1 ~0.8MB × 450 would be large if held raw — actual `HistoryStore` holds envelopes in-memory per-tab; budget is 2MB JS heap for the live window (measured via DevTools Memory). H2 with larger envelopes allows 5MB. H2 est. 1.49 MB still well under 5 MB.
-- **Export (redacted) size**: `buildExportPayload(envelope, {redact:true})` clones via `JSON.parse(JSON.stringify(...))` and redacts `CommandLine` + `Startup.Command`. Size ~= snapshot JSON + `exportedAt` field; redacted vs unredacted differ by CommandLine length. No hard budget — track parity. H2T5 added `Startup[].Command → [redacted]` when `redact:true`; `Network.TcpConnections` kept verbatim (no secrets, shape preserved).
+- **Snapshot latency p50**: loopback `GET /api/snapshot` with no extra providers, concurrency cap 2, 12s timeout. Measure with `Measure-Command { Invoke-RestMethod http://localhost:22880/api/snapshot }` p50 over 20 runs. H1 collector is `snapshot.ps1` (memory + processes + WSL stub). H2 adding disk/net/volumes/startup may add ~50–100ms each; budget relaxes to 900ms. H3 adds runtimegroups/sensors/docker (sensors ~50ms WMI, docker ~100ms when present) — p50 still budgeted <900 ms; validation micro-bench ~30 µs/op is not p50.
+- **Snapshot JSON size**: raw response bytes. Fixture `testdata/envelope_ok.json` is ~3.37 KB (1 proc stub, H3 v3); extrapolate or capture a real 599-proc snapshot. H1 target ~0.8MB live; H2 with 4 providers ~1.5MB ceiling relates to wire + `HistoryStore` clone cost. H3 fixture 3371 B (+614 B vs H2, +22%) — well within 1.5 MB ceiling even extrapolated to 599 procs (~1.2 MB est.); budget headroom intact.
+- **JSON validation allocs**: from `go test -bench=BenchmarkValidateEnvelope -benchmem .` — `allocs/op` and `B/op`. Validates envelope shape (`data.Memory.VisiblePhysicalBytes` etc.) via `validateEnvelope`. Budget <5 allocs/op keeps GC pressure flat on auto-refresh (2s interval). H2 delta: +21 allocs (+19.6%), +2792 B (+43%), +8.2 µs (+54%) reflects larger v2 fixture (extra structs validated). H3 delta: +20 allocs (+15.6%), +2576 B (+27.8%), +6.2–7.2 µs (+26–31%) reflects larger v3 fixture (RuntimeGroups/Sensors/Docker). Still exceeds <5 budget — flat 128 carry not met; regression noted, not blocking per Global Constraints (flat or improve is target, not hard gate). Carry to next horizon for pooling/zero-alloc JSON validation.
+- **Go vet / node --check**: `go vet ./...` and `node --check static/app.js` both pass at H1, H2, H3. Any change that breaks them blocks merge.
+- **HistoryStore 450 slots**: bounded ring buffer (15 min @ 2s interval = 450 envelopes). Each slot holds `{at, envelope}`; estimate `snapshot JSON bytes × 450 × ~1.2`. H1 ~0.8MB × 450 would be large if held raw — actual `HistoryStore` holds envelopes in-memory per-tab; budget is 2MB JS heap for the live window (measured via DevTools Memory). H2 with larger envelopes allows 5MB. H3 est. 1.82 MB (3.37 KB ×450 ×1.2) still well under 5 MB.
+- **Export (redacted) size**: `buildExportPayload(envelope, {redact:true})` clones via `JSON.parse(JSON.stringify(...))` and redacts `CommandLine` + `Startup.Command`. Size ~= snapshot JSON + `exportedAt` field; redacted vs unredacted differ by CommandLine length. No hard budget — track parity. H2T5 added `Startup[].Command → [redacted]` when `redact:true`; `Network.TcpConnections` kept verbatim (no secrets, shape preserved). H3T4: RuntimeGroups (no CommandLine — fields Runtime/Host/Count/TotalWorkingSet/TotalCpu/Pids), Sensors (CpuTempC float), Docker.Containers (Id/Image/State/Names) contain no secrets; shape preserved verbatim, no redaction needed. If any CommandLine-like field appears in RuntimeGroups in future, it MUST follow H1T5 rule (redact to `[redacted]` when `redact:true`).
 
 ## Current (H1) — measured 2026-09-01
 
@@ -80,3 +80,41 @@ ok  	sysview	1.542s  # run 2
 | HistoryStore 450 slots (est.) | ~0.68 MB ×1.2 ≈0.82 MB | ~1.24 MB ×1.2 ≈1.49 MB | +0.67 MB | **pass** (<5 MB) |
 | Go vet / node --check | pass | pass | 0 | **pass** |
 | Export redacted parity | CommandLine only | CommandLine + Startup.Command | +Startup redaction | **pass** (no size budget) |
+
+## Current (H3) — measured 2026-09-01 (H3T4 — after RuntimeGroups/Sensors/Docker + HTML hardening + redaction check)
+
+_Provenance — `go test -bench=BenchmarkValidateEnvelope -benchmem -run=^$ .`, `go test ./... -v`, `go vet ./...`, `node --check static/app.js`, fixture size, html-validate._
+
+```
+goos: windows
+goarch: amd64
+pkg: sysview
+cpu: AMD Ryzen 7 9700X 8-Core Processor
+BenchmarkValidateEnvelope-16    	   40204	     30562 ns/op	   11856 B/op	     148 allocs/op   # H3 run 1
+BenchmarkValidateEnvelope-16    	   42474	     29574 ns/op	   11856 B/op	     148 allocs/op   # H3 run 2
+PASS
+ok  	sysview	1.580s  # run 1
+ok  	sysview	1.615s  # run 2
+```
+
+| Metric | Value | Source |
+|--------|-------|--------|
+| `BenchmarkValidateEnvelope` | 29574–30562 ns/op, 11856 B/op, 148 allocs/op (runs 1–2) | `go test -bench=BenchmarkValidateEnvelope -benchmem -run=^$ .` (windows/amd64, Ryzen 7 9700X, Go 1.26.5) |
+| Snapshot JSON (fixture) | 3371 B (1 proc, v3) | `(Get-Item testdata/envelope_ok.json).Length` → 3371; `3.29 KB` |
+| `go vet ./...` | pass | `go vet ./...` exit 0, 2026-09-01 (H3T4) |
+| `node --check static/app.js` | pass | `node --check static/app.js` exit 0, 2026-09-01 (H3T4 — RuntimeGroups/Sensors/Docker no redaction needed, Startup redaction preserved) |
+| `go test ./...` | PASS (10 tests) | `go test ./... -v` — 10 PASS, 0 FAIL (TestValidateEnvelope_* 3, TestHandleSnapshot_* 2, TestHandleWslShutdown_* 3, TestMemoryInvariants_Tolerance 1, TestMemoryUnavailable_RendersUnavailable 1) |
+| `node static/export_test.js` + history/tabs | PASS | `node static/export_test.js` → `export_test PASS`; `node static/history_store_test.js` → `all assertions passed`; `node static/tabs_test.js` → `all assertions passed` |
+| `buildExportPayload` redaction (H3 check) | pass — no new CommandLine-like fields | RuntimeGroups [{Runtime,Host,Count,TotalWorkingSet,TotalCpu,Pids}] no CommandLine; Sensors {CpuTempC} no secrets; Docker.Containers [{Id,Image,State,Names}] no secrets — shape preserved verbatim. Manual `node -e` verifies `redact:true` keeps groups/sensors/docker intact, `redact:false` preserves secrets elsewhere, original not mutated |
+| html-validate | pass | `node -e` counts: `<section>` 15 vs `</section>` 15 match, `<div>` 67 vs `</div>` 67 match, `**` 0, `&bull;` 0, footer `v0.2.0` present, install docs via README (`winget`/`scoop` manifests) |
+
+| Metric | H2 baseline | H3 proposal | Delta | Budget? |
+|--------|-------------|-------------|-------|---------|
+| `BenchmarkValidateEnvelope` allocs | 128 allocs/op | 148 allocs/op | +20 (+15.6%) | **exceeds <5 budget** (flat 128 carry not met; larger v3 fixture drives allocs; carry to next horizon) |
+| `BenchmarkValidateEnvelope` B/op | 9280 B/op | 11856 B/op | +2576 B (+27.8%) | — |
+| `BenchmarkValidateEnvelope` ns/op | 23333 ns/op | ~29574 ns/op | +6241 ns (+26.7%) | — |
+| Snapshot JSON fixture | 2757 B | 3371 B | +614 B (+22.3%) | **pass** (<1.5 MB ceiling; est. live 599 procs ~1.2 MB <1.5 MB) |
+| HistoryStore 450 slots (est.) | ~1.24 MB ×1.2 ≈1.49 MB | ~1.52 MB ×1.2 ≈1.82 MB | +0.33 MB | **pass** (<5 MB; headroom 3.18 MB) |
+| Go vet / node --check | pass | pass | 0 | **pass** |
+| Export redacted parity | Startup.Command redacted | unchanged + H3 no new secrets | 0 | **pass** |
+| html-validate (sections/divs/bullets/footer) | N/A (pre-H3T4 sections 16 vs 15 mismatch) | 15/15 sections, 67/67 divs, `**`0 `&bull;`0, footer v0.2.0 | fixed extra `</section>` in WSL panel | **pass** |
