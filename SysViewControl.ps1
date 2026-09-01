@@ -199,11 +199,12 @@ $btnStart.Add_Click({
         $readiness = New-Object Windows.Forms.Timer
         $readiness.Interval = 400
         $readiness.Add_Tick({
+            param($sender, $e)
             $global:startAttempts++
             Update-UIState
             $s = Get-ServerState
-            if ($s.Running -and $s.Port) { $readiness.Stop(); $readiness.Dispose() }
-            elseif ($global:startAttempts -gt 15) { $readiness.Stop(); $readiness.Dispose() }
+            if ($s.Running -and $s.Port) { $sender.Stop(); $sender.Dispose() }
+            elseif ($global:startAttempts -gt 15) { $sender.Stop(); $sender.Dispose() }
         })
         $readiness.Start()
     } else {
