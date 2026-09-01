@@ -191,6 +191,43 @@ func requireToken(r *http.Request) bool {
 	return tok != "" && tok == capabilityToken
 }
 
+func validateEnvelope(raw []byte) error {
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return err
+	}
+	hasData := false
+	if _, ok := env["data"]; ok {
+		hasData = true
+	} else if _, ok := env["Memory"]; ok {
+		hasData = true
+	}
+	if !hasData {
+		return fmt.Errorf("missing data/Memory")
+	}
+	if dataRaw, ok := env["data"]; ok {
+		var data map[string]json.RawMessage
+		if err := json.Unmarshal(dataRaw, &data); err == nil {
+			if memRaw, ok := data["Memory"]; ok {
+				return validateMemoryRaw(memRaw)
+			}
+		}
+	}
+	return nil
+}
+func validateMemoryRaw(memRaw json.RawMessage) error {
+	var mem map[string]json.RawMessage
+	if err := json.Unmarshal(memRaw, &mem); err != nil {
+		return err
+	}
+	for _, k := range []string{"VisiblePhysicalBytes", "InUseBytes", "AvailableBytes"} {
+		if _, ok := mem[k]; !ok {
+			return fmt.Errorf("missing Memory.%s", k)
+		}
+	}
+	return nil
+}
+
 func handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, `{"error":"Method not allowed. Use GET."}`, http.StatusMethodNotAllowed)
@@ -244,37 +281,19 @@ func handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"Empty snapshot output"}`, http.StatusInternalServerError)
 		return
 	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &envelope); err != nil {
+	if err := validateEnvelope(raw); err != nil {
+		if err.Error() == "missing data/Memory" {
+			http.Error(w, `{"error":"Snapshot missing required fields"}`, http.StatusInternalServerError)
+			return
+		}
+		if strings.HasPrefix(err.Error(), "missing Memory.") {
+			k := strings.TrimPrefix(err.Error(), "missing Memory.")
+			http.Error(w, fmt.Sprintf(`{"error":"Snapshot missing Memory.%s"}`, k), http.StatusInternalServerError)
+			return
+		}
 		log.Printf("Snapshot produced invalid JSON: %v\nOutput: %s\n", err, string(raw[:min(2000, len(raw))]))
 		http.Error(w, fmt.Sprintf(`{"error":"Invalid snapshot JSON", "details":%q}`, err.Error()), http.StatusInternalServerError)
 		return
-	}
-	hasData := false
-	if _, ok := envelope["data"]; ok {
-		hasData = true
-	} else if _, ok := envelope["Memory"]; ok {
-		hasData = true
-	}
-	if !hasData {
-		http.Error(w, `{"error":"Snapshot missing required fields"}`, http.StatusInternalServerError)
-		return
-	}
-	if dataRaw, ok := envelope["data"]; ok {
-		var data map[string]json.RawMessage
-		if err := json.Unmarshal(dataRaw, &data); err == nil {
-			if memRaw, ok := data["Memory"]; ok {
-				var mem map[string]json.RawMessage
-				if err := json.Unmarshal(memRaw, &mem); err == nil {
-					for _, k := range []string{"VisiblePhysicalBytes", "InUseBytes", "AvailableBytes"} {
-						if _, ok := mem[k]; !ok {
-							http.Error(w, fmt.Sprintf(`{"error":"Snapshot missing Memory.%s"}`, k), http.StatusInternalServerError)
-							return
-						}
-					}
-				}
-			}
-		}
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 	if _, err = w.Write(raw); err != nil {
@@ -350,7 +369,7 @@ func handleWslShutdown(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
 			return
 		}
-	} else if len(body) > 0 {
+	} else {
 		http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
 		return
 	}

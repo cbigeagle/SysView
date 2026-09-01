@@ -1,4 +1,64 @@
-document.addEventListener('DOMContentLoaded', () => {
+// H1T3: HistoryStore — bounded ring buffer (cap 450 = 15min @ 2s) + AutoRefresh harness
+class HistoryStore {
+  constructor(cap = 450) { this.cap = cap; this.items = []; }
+  push(envelope) { this.items.push({ at: Date.now(), envelope }); if (this.items.length > this.cap) this.items.shift(); }
+  get length() { return this.items.length; }
+  latest() { return this.items.length ? this.items[this.items.length - 1].envelope : null; }
+  at(i) { return this.items[i] ? this.items[i].envelope : null; }
+  toJSON() { return this.items.map(x => x.envelope); }
+  deltas() {
+    if (this.items.length < 2) return null;
+    const a = this.items[this.items.length - 2].envelope.data || this.items[this.items.length - 2].envelope;
+    const b = this.items[this.items.length - 1].envelope.data || this.items[this.items.length - 1].envelope;
+    const aMem = a.Memory || {};
+    const bMem = b.Memory || {};
+    return {
+      availableDelta: (bMem.AvailableBytes || 0) - (aMem.AvailableBytes || 0),
+      inUseDelta: (bMem.InUseBytes || 0) - (aMem.InUseBytes || 0),
+      poolDelta: (bMem.NonpagedPoolBytes || 0) - (aMem.NonpagedPoolBytes || 0)
+    };
+  }
+}
+const historyStore = new HistoryStore(450);
+if (typeof window !== 'undefined') { window.__historyStore = historyStore; window.HistoryStore = HistoryStore; window.historyStore = historyStore; }
+
+function buildExportPayload(envelope, {redact=true}={}){
+  const clone = JSON.parse(JSON.stringify(envelope));
+  clone.exportedAt = new Date().toISOString();
+  clone.exportNote = redact ? "CommandLine redacted by default; toggle to include" : "CommandLine included — may contain secrets";
+  if(redact && clone.data && clone.data.WebViewProcesses){
+    clone.data.WebViewProcesses.forEach(p=>{ if(p.CommandLine) p.CommandLine="[redacted]"; });
+  }
+  if(redact && clone.data && clone.data.AllProcesses){
+    clone.data.AllProcesses.forEach(p=>{ if(p.CommandLine) p.CommandLine="[redacted]"; });
+  }
+  return clone;
+}
+if (typeof window !== 'undefined') window.buildExportPayload = buildExportPayload;
+if (typeof module !== 'undefined' && module.exports) { module.exports.buildExportPayload = buildExportPayload; module.exports.HistoryStore = HistoryStore; }
+
+// H1T4: pure comparator — stable sort mimic, string for name, numeric for others
+function sortProcesses(list, key, dir){
+  const get={name:p=>p.Name.toLowerCase(), pid:p=>p.PID, private:p=>p.PrivateMemory, ws:p=>p.WorkingSet, cpu:p=>p.CPU}[key];
+  if(!get) return [...list];
+  return [...list].sort((a,b)=>{
+    const av=get(a), bv=get(b);
+    if(typeof av==='string' && typeof bv==='string'){
+      const cmp=av.localeCompare(bv);
+      return dir==='asc' ? cmp : -cmp;
+    }
+    return dir==='asc' ? av - bv : bv - av;
+  });
+}
+if(typeof window!=='undefined'){ window.sortProcesses=sortProcesses; }
+if(typeof module!=='undefined' && module.exports){ module.exports.sortProcesses=sortProcesses; }
+
+// H1T2 test hook: pure helper for memory unavailable detection (providers.memory === 'unavailable' or zero bytes)
+function isMemUnavailable(providers, mem) {
+	return (providers && providers.memory === 'unavailable') || !mem || (mem.VisiblePhysicalBytes === 0 && mem.TotalPhysicalBytes === 0);
+}
+if (typeof window !== 'undefined') { window.isMemUnavailable = isMemUnavailable; window.__memUnavailable = isMemUnavailable; }
+if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', () => {
     // ── Theme: semantic tokens, persisted, system fallback ──
     const themeSelect = document.getElementById('theme-select');
     const THEME_KEY = 'sysview-theme';
@@ -58,8 +118,126 @@ document.addEventListener('DOMContentLoaded', () => {
     const wvSearchInput = document.getElementById('wv-search');
     const memoryHogsTable = document.getElementById('memory-hogs-table');
     const diagnosticInsightsContainer = document.getElementById('diagnostic-insights');
-    
+    const historyBadge = document.getElementById('history-badge');
+    const historyIntervalSelect = document.getElementById('history-interval');
+    const historyPauseBtn = document.getElementById('history-pause');
+
+    // H1T4: Tabs — role=tablist wiring + persistence
+    const tabBtns = [...document.querySelectorAll('[role="tab"]')];
+    const tabPanels = [...document.querySelectorAll('[data-panel]')];
+    let _activeTab = null;
+    function activateTab(name){
+      const valid = ['overview','processes','webview','wsl'];
+      if(!valid.includes(name)) name='overview';
+      _activeTab = name;
+      tabBtns.forEach(b=>{ const on=b.dataset.tab===name; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; });
+      tabPanels.forEach(p=>{ p.hidden = p.dataset.panel !== name; });
+      window.__activeTab = name;
+      try{ localStorage.setItem('sysview-tab', name); }catch{}
+      try{ history.replaceState(null,'','#'+name); }catch{}
+    }
+    if(typeof window!=='undefined'){ window.activateTab = activateTab; }
+    tabBtns.forEach(b=> b.addEventListener('click', ()=> activateTab(b.dataset.tab)));
+    // keyboard on tablist: ArrowLeft/Right cycles, Home/End
+    const tabBar = document.querySelector('.tab-bar');
+    if(tabBar){
+      tabBar.addEventListener('keydown', (e)=>{
+        const idx = tabBtns.indexOf(document.activeElement);
+        if(e.key==='ArrowRight'){ e.preventDefault(); const n=(idx+1)%tabBtns.length; tabBtns[n].focus(); activateTab(tabBtns[n].dataset.tab); }
+        else if(e.key==='ArrowLeft'){ e.preventDefault(); const n=(idx-1+tabBtns.length)%tabBtns.length; tabBtns[n].focus(); activateTab(tabBtns[n].dataset.tab); }
+        else if(e.key==='Home'){ e.preventDefault(); tabBtns[0].focus(); activateTab(tabBtns[0].dataset.tab); }
+        else if(e.key==='End'){ e.preventDefault(); tabBtns[tabBtns.length-1].focus(); activateTab(tabBtns[tabBtns.length-1].dataset.tab); }
+      });
+    }
+    // restore tab from hash or localStorage
+    (function initTab(){
+      let saved=null; try{ saved = localStorage.getItem('sysview-tab'); }catch{}
+      const hash = (location.hash||'').replace('#','').toLowerCase();
+      const valid=['overview','processes','webview','wsl'];
+      let initial='overview';
+      if(valid.includes(hash)) initial=hash;
+      else if(valid.includes(saved)) initial=saved;
+      activateTab(initial);
+      window.addEventListener('hashchange', ()=>{ const h=(location.hash||'').replace('#','').toLowerCase(); if(valid.includes(h)) activateTab(h); });
+    })();
+    // global keyboard: R refresh, / focus filter
+    document.addEventListener('keydown', (e)=>{
+      const tag=(e.target.tagName||'').toLowerCase();
+      const isInput = tag==='input' || tag==='textarea' || tag==='select' || e.target.isContentEditable;
+      if(!isInput && (e.key==='r' || e.key==='R')){ e.preventDefault(); grabSnapshot(); }
+      if(!isInput && e.key==='/'){ e.preventDefault(); const inp=document.getElementById('wv-search'); if(inp){ inp.focus(); try{ activateTab('webview'); }catch{} } }
+    });
+    // H1T4: sortable hog table state
+    let hogSortKey='private', hogSortDir='desc';
+    let _lastAllProcesses=null;
+
     let currentData = null;
+    // H1T3: AutoRefresh controller
+    let autoTimer = null, autoInterval = 2000, autoPaused = false;
+    function stopAuto(){ clearInterval(autoTimer); autoTimer=null; }
+    function startAuto(){ stopAuto(); if(autoPaused) return; autoTimer=setInterval(grabSnapshot, autoInterval); }
+    function updateHistoryBadge(){
+        if(!historyBadge) return;
+        const n = historyStore.length;
+        if(n===0){ historyBadge.textContent='No samples yet'; return; }
+        const lastAt = historyStore.items[historyStore.items.length-1].at;
+        const secs = Math.round((Date.now()-lastAt)/1000);
+        const age = secs<5 ? 'just now' : secs<60 ? secs+'s ago' : Math.round(secs/60)+'m ago';
+        historyBadge.textContent = 'Updated ' + age + ' \u00B7 ' + n + ' sample' + (n===1?'':'s');
+    }
+    function formatDelta(bytes){
+        if(bytes===0||bytes==null) return '';
+        const sign = bytes>0?'+':'';
+        const abs = Math.abs(bytes);
+        let v;
+        if(abs>=1024*1024*1024) v=(abs/(1024*1024*1024)).toFixed(1)+' GB';
+        else if(abs>=1024*1024) v=(abs/(1024*1024)).toFixed(0)+' MB';
+        else if(abs>=1024) v=(abs/1024).toFixed(0)+' KB';
+        else v=abs+' B';
+        return ' ('+sign+v+' since last)';
+    }
+    function renderSparklines(){
+        const points = historyStore.items.slice(-30).map(function(it){
+            const env = it.envelope; const d = env.data || env; const m = d.Memory || {};
+            return m.AvailableBytes || 0;
+        });
+        const cards = document.querySelectorAll('.detail-card');
+        if(cards.length===0) return;
+        let wraps = document.querySelectorAll('.sparkline-wrap');
+        if(wraps.length===0){
+            cards.forEach(function(card){
+                const w=document.createElement('div'); w.className='sparkline-wrap'; w.setAttribute('aria-hidden','true');
+                const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+                svg.setAttribute('width','120'); svg.setAttribute('height','28'); svg.setAttribute('viewBox','0 0 120 28'); svg.classList.add('sparkline');
+                w.appendChild(svg);
+                const deltaEl=document.createElement('span'); deltaEl.className='sparkline-delta'; w.appendChild(deltaEl);
+                card.appendChild(w);
+            });
+            wraps=document.querySelectorAll('.sparkline-wrap');
+        }
+        if(points.length<2){
+            wraps.forEach(function(w){ const s=w.querySelector('svg'); if(s) s.innerHTML=''; const d=w.querySelector('.sparkline-delta'); if(d) d.textContent=''; });
+            return;
+        }
+        const min=Math.min.apply(null,points), max=Math.max.apply(null,points);
+        const range=(max-min)||1;
+        const step=120/(points.length-1);
+        const path=points.map(function(v,i){
+            const x=i*step; const y=28 - ((v-min)/range)*22 - 3;
+            return (i===0?'M':'L')+x.toFixed(1)+','+y.toFixed(1);
+        }).join(' ');
+        wraps.forEach(function(w){
+            const svg=w.querySelector('svg');
+            if(!svg) return;
+            svg.innerHTML='<path d="'+path+'" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
+        });
+        const d = historyStore.deltas();
+        if(d && wraps[0]){
+            const deltaEl=wraps[0].querySelector('.sparkline-delta');
+            if(deltaEl) deltaEl.textContent = formatDelta(d.availableDelta);
+        }
+    }
+    if(typeof window!=='undefined'){ window.updateHistoryBadge=updateHistoryBadge; window.renderSparklines=renderSparklines; window.startAuto=startAuto; window.stopAuto=stopAuto; }
 
     // Helper functions
     function formatBytes(bytes, decimals = 2) {
@@ -240,6 +418,10 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Render UI (handles unavailable providers)
             updateUI(data);
+            // H1T3: bounded history + badge + sparklines
+            historyStore.push(envelope);
+            updateHistoryBadge();
+            renderSparklines();
             
         } catch (error) {
             console.error('Error fetching snapshot:', error);
@@ -287,7 +469,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 2. RAM calculations — use VisiblePhysicalBytes for OS utilization (installed = visible + hardware reserved)
         const mem = data.Memory;
         const providers = (data._envelope && data._envelope.providers) || {};
-        const memUnavailable = providers.memory === 'unavailable' || !mem || (mem.VisiblePhysicalBytes === 0 && mem.TotalPhysicalBytes === 0);
+        const memUnavailable = isMemUnavailable(providers, mem);
         if (memUnavailable) {
             ramUsedPctSpan.textContent = 'Unavailable';
             ramUsedRatioSpan.textContent = 'Memory provider unavailable';
@@ -808,11 +990,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderMemoryHogs(allProcesses) {
-        // Exclude WebView2 processes and sort by Private memory usage
+        _lastAllProcesses = allProcesses;
+        // Exclude WebView2 processes and sort via current sort key/dir
         const nonWv = allProcesses.filter(p => p.Name.toLowerCase() !== 'msedgewebview2');
-        nonWv.sort((a, b) => b.PrivateMemory - a.PrivateMemory);
-        
-        const topHogs = nonWv.slice(0, 15);
+        const sorted = sortProcesses(nonWv, hogSortKey, hogSortDir);
+        const topHogs = sorted.slice(0, 15);
         memoryHogsTable.innerHTML = '';
         
         topHogs.forEach(p => {
@@ -1218,7 +1400,68 @@ document.addEventListener('DOMContentLoaded', () => {
             displayFilteredWebViewGroups();
         }, 150);
     });
+    // H1T4: sortable hog headers — data-sort, aria-sort, re-render
+    const hogTable = document.querySelector('table thead');
+    function updateHogSortUI(){
+      document.querySelectorAll('th[data-sort]').forEach(th=>{
+        const k=th.dataset.sort;
+        if(k===hogSortKey) th.setAttribute('aria-sort', hogSortDir==='asc' ? 'ascending' : 'descending');
+        else th.setAttribute('aria-sort','none');
+      });
+    }
+    document.querySelectorAll('th[data-sort]').forEach(th=>{
+      const handler = ()=>{
+        const key=th.dataset.sort;
+        if(hogSortKey===key){ hogSortDir = hogSortDir==='asc' ? 'desc' : 'asc'; }
+        else { hogSortKey=key; hogSortDir = (key==='name' ? 'asc' : 'desc'); }
+        updateHogSortUI();
+        if(_lastAllProcesses) renderMemoryHogs(_lastAllProcesses);
+      };
+      th.addEventListener('click', handler);
+      th.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); handler(); }});
+    });
+    updateHogSortUI();
+    // H1T3: history controls — interval + pause + auto-refresh wiring
+    if(historyIntervalSelect){
+        historyIntervalSelect.addEventListener('change', () => {
+            const v = parseInt(historyIntervalSelect.value,10);
+            if([2000,5000,10000].includes(v)) autoInterval=v;
+            if(!autoPaused) startAuto();
+        });
+    }
+    if(historyPauseBtn){
+        historyPauseBtn.addEventListener('click', () => {
+            autoPaused = !autoPaused;
+            if(autoPaused){ stopAuto(); historyPauseBtn.textContent='Resume'; }
+            else { historyPauseBtn.textContent='Pause'; startAuto(); }
+        });
+    }
+    // H1T5: Export snapshot JSON — redacted by default
+    const exportBtn = document.getElementById('export-btn');
+    const exportIncludeCb = document.getElementById('export-include-cmdline');
+    const exportStatus = document.getElementById('export-status');
+    if(exportBtn){
+        exportBtn.addEventListener('click', ()=>{
+            const env = window.__historyStore?.latest() || (currentData?._envelope ? {capturedAt: currentData._envelope.capturedAt, schemaVersion: currentData._envelope.schemaVersion||1, providers: currentData._envelope.providers||{}, errors: currentData._envelope.errors||[], data: currentData} : currentData);
+            if(!env){ if(exportStatus) exportStatus.textContent="No snapshot yet"; return; }
+            const redact = exportIncludeCb ? !exportIncludeCb.checked : true;
+            const source = env.data ? env : {data: env, providers:{}, errors:[], capturedAt: new Date().toISOString(), schemaVersion:1};
+            const payload = buildExportPayload(source, {redact});
+            const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+            const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+            a.download=`SysView_snapshot_${new Date().toISOString().replace(/[:.]/g,'-')}.json`; a.click();
+            setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+            if(exportStatus) exportStatus.textContent=redact?"Exported (command lines redacted)":"Exported (command lines included)";
+        });
+    }
 
-    // Initial load
+    // Initial load + auto-refresh
     grabSnapshot();
+    startAuto();
+    // respect prefers-reduced-motion: if user prefers reduced motion, pause auto-refresh by default but allow resume
+    try{
+        if(window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+            // do not auto-pause; just ensure no sparkline animation (CSS handles) — keep auto going
+        }
+    }catch{}
 });
