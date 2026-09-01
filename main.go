@@ -35,10 +35,40 @@ var (
 	snapshotSem     = make(chan struct{}, 2)
 	wslSem         = make(chan struct{}, 1)
 )
+// zero-alloc envelope validation types (H4T1)
+type envelopeTop struct {
+	Data          json.RawMessage `json:"data"`
+	LegacyMemory  json.RawMessage `json:"Memory"`
+}
+
+type dataMem struct {
+	Memory json.RawMessage `json:"Memory"`
+}
+
+type memFields struct {
+	VisiblePhysicalBytes *int64 `json:"VisiblePhysicalBytes"`
+	InUseBytes           *int64 `json:"InUseBytes"`
+	AvailableBytes       *int64 `json:"AvailableBytes"`
+}
 
 func main() {
+	var headless bool
+	var once bool
+	var output string
+	var pretty bool
+	redact := true
+	flag.BoolVar(&headless, "headless", false, "Run in headless mode (write snapshot JSON to stdout or file, no HTTP server)")
+	flag.BoolVar(&once, "once", false, "Alias for --headless (run once then exit)")
+	flag.StringVar(&output, "output", "", "Output file for headless mode (default stdout)")
+	flag.BoolVar(&pretty, "pretty", false, "Pretty-print JSON in headless mode")
+	flag.BoolVar(&redact, "redact", true, "Redact CommandLine/Command fields in headless output (default true)")
 	portFlag := flag.Int("port", 0, "Explicit port to run the server on (overrides auto-detection)")
 	flag.Parse()
+
+	if headless || once {
+		runHeadless(output, pretty, redact)
+		return
+	}
 
 	var port int
 	if *portFlag > 0 {
@@ -192,38 +222,36 @@ func requireToken(r *http.Request) bool {
 }
 
 func validateEnvelope(raw []byte) error {
-	var env map[string]json.RawMessage
+	var env envelopeTop
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return err
 	}
-	hasData := false
-	if _, ok := env["data"]; ok {
-		hasData = true
-	} else if _, ok := env["Memory"]; ok {
-		hasData = true
-	}
-	if !hasData {
+	if env.Data == nil && env.LegacyMemory == nil {
 		return fmt.Errorf("missing data/Memory")
 	}
-	if dataRaw, ok := env["data"]; ok {
-		var data map[string]json.RawMessage
-		if err := json.Unmarshal(dataRaw, &data); err == nil {
-			if memRaw, ok := data["Memory"]; ok {
-				return validateMemoryRaw(memRaw)
+	if env.Data != nil {
+		var dm dataMem
+		if err := json.Unmarshal(env.Data, &dm); err == nil {
+			if dm.Memory != nil {
+				return validateMemoryRaw(dm.Memory)
 			}
 		}
 	}
 	return nil
 }
 func validateMemoryRaw(memRaw json.RawMessage) error {
-	var mem map[string]json.RawMessage
+	var mem memFields
 	if err := json.Unmarshal(memRaw, &mem); err != nil {
 		return err
 	}
-	for _, k := range []string{"VisiblePhysicalBytes", "InUseBytes", "AvailableBytes"} {
-		if _, ok := mem[k]; !ok {
-			return fmt.Errorf("missing Memory.%s", k)
-		}
+	if mem.VisiblePhysicalBytes == nil {
+		return fmt.Errorf("missing Memory.VisiblePhysicalBytes")
+	}
+	if mem.InUseBytes == nil {
+		return fmt.Errorf("missing Memory.InUseBytes")
+	}
+	if mem.AvailableBytes == nil {
+		return fmt.Errorf("missing Memory.AvailableBytes")
 	}
 	return nil
 }
@@ -324,6 +352,124 @@ func findAvailablePort(startPort int) int {
 	_, portStr, _ := net.SplitHostPort(ln.Addr().String())
 	p, _ := strconv.Atoi(portStr)
 	return p
+}
+
+func collectSnapshot(ctx context.Context) ([]byte, error) {
+	tmpFile, err := os.CreateTemp("", "snapshot-*.ps1")
+	if err != nil {
+		return nil, fmt.Errorf("create temp file: %w", err)
+	}
+	if _, err := tmpFile.WriteString(snapshotScript); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		return nil, fmt.Errorf("write temp file: %w", err)
+	}
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmpFile.Name())
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("snapshot timed out")
+	}
+	if err != nil {
+		if stderr.Len() > 0 {
+			return nil, fmt.Errorf("powershell collection failed: %v: %s", err, stderr.String())
+		}
+		return nil, fmt.Errorf("powershell collection failed: %w", err)
+	}
+	raw := stdout.Bytes()
+	if len(raw) > 10<<20 {
+		return nil, fmt.Errorf("snapshot output too large")
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("empty snapshot output")
+	}
+	return raw, nil
+}
+
+func applyRedaction(raw []byte) ([]byte, error) {
+	var env map[string]interface{}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, err
+	}
+	data, ok := env["data"].(map[string]interface{})
+	if !ok {
+		return raw, nil
+	}
+	if arr, ok := data["WebViewProcesses"].([]interface{}); ok {
+		for _, v := range arr {
+			if m, ok := v.(map[string]interface{}); ok {
+				if _, has := m["CommandLine"]; has {
+					m["CommandLine"] = "[redacted]"
+				}
+			}
+		}
+	}
+	if arr, ok := data["AllProcesses"].([]interface{}); ok {
+		for _, v := range arr {
+			if m, ok := v.(map[string]interface{}); ok {
+				if _, has := m["CommandLine"]; has {
+					m["CommandLine"] = "[redacted]"
+				}
+			}
+		}
+	}
+	if arr, ok := data["Startup"].([]interface{}); ok {
+		for _, v := range arr {
+			if m, ok := v.(map[string]interface{}); ok {
+				if _, has := m["Command"]; has {
+					m["Command"] = "[redacted]"
+				}
+			}
+		}
+	}
+	return json.Marshal(env)
+}
+
+func runHeadless(output string, pretty, redact bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	raw, err := collectSnapshot(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "{\"error\":%q}\n", err.Error())
+		os.Exit(1)
+	}
+	if err := validateEnvelope(raw); err != nil {
+		fmt.Fprintf(os.Stderr, "{\"error\":\"validation failed\",\"details\":%q}\n", err.Error())
+		os.Exit(1)
+	}
+	out := raw
+	if redact {
+		if redacted, err := applyRedaction(raw); err == nil {
+			out = redacted
+		} else {
+			fmt.Fprintf(os.Stderr, "{\"error\":\"redaction failed\",\"details\":%q}\n", err.Error())
+			os.Exit(1)
+		}
+	}
+	if pretty {
+		var v interface{}
+		if err := json.Unmarshal(out, &v); err == nil {
+			if p, err := json.MarshalIndent(v, "", "  "); err == nil {
+				out = p
+			}
+		}
+	}
+	if output != "" {
+		if err := os.WriteFile(output, out, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "{\"error\":\"write output failed\",\"details\":%q}\n", err.Error())
+			os.Exit(1)
+		}
+	} else {
+		os.Stdout.Write(out)
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			os.Stdout.Write([]byte("\n"))
+		}
+	}
+	os.Exit(0)
 }
 
 func openBrowser(url string) {
