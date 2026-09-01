@@ -512,6 +512,13 @@ tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transpa
 .insight-content h4 { font-size: 0.88rem; font-weight: 670; color: var(--text-1); margin-bottom: 0.25rem; }
 .insight-content p { font-size: 0.82rem; color: var(--text-2); line-height: 1.5; }
 .insight-content ul { margin-top: 0.45rem; padding-left: 1.1rem; font-size: 0.82rem; color: var(--text-2); line-height: 1.5; }
+/* H5aT2: evidence cards — Observed -> May mean -> Next safe check + confidence + elapsed */
+.evidence-meta { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.35rem; font-size: 0.8rem; color: var(--text-2); line-height: 1.5; }
+.evidence-observed, .evidence-maymean, .evidence-next, .evidence-confidence { font-variant-numeric: tabular-nums; }
+.evidence-observed { color: var(--text-1); }
+.evidence-maymean { color: var(--text-2); }
+.evidence-next { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.pool-trend { font-variant-numeric: tabular-nums; }
 
 /* WSL */
 .wsl-content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
