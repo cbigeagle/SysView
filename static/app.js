@@ -32,6 +32,7 @@ function buildExportPayload(envelope, {redact=true}={}){
   if(redact && clone.data && clone.data.AllProcesses){
     clone.data.AllProcesses.forEach(p=>{ if(p.CommandLine) p.CommandLine="[redacted]"; });
   }
+  if(redact && clone.data && clone.data.Startup){ clone.data.Startup.forEach(s=>{ if(s.Command) s.Command="[redacted]"; }); }
   return clone;
 }
 if (typeof window !== 'undefined') window.buildExportPayload = buildExportPayload;
