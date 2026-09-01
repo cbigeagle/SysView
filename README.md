@@ -288,6 +288,77 @@ Responses:
   405 on GET
 ```
 
+### Restart Runtime Host — Safe (Teams/Code/Electron/Node)
+
+Restarts the **host** process (e.g. Teams, Code) and its embedded pages by stopping the *host* PID only — never mass-killing children. Requires explicit confirmation that lists the host name, PID, child count and working set so you know what will close.
+
+**What it does:**
+- Validates the request: `host` + `pid` must be present, `pid > 4` (rejects PID 0 / 4 and other critical system PIDs), `confirm:true` required, token + origin gated, concurrency cap 1 (`429 Runtime restart already in progress`, 10s timeout).
+- Checks the PID exists via PowerShell `Get-Process -Id <pid>` — on missing PID returns `400 {error:"PID not found"}`.
+- Validates the `host` name matches the process name (case-insensitive) — mismatch is warned but not blocked (host groups are snapshot-derived).
+- Stops only the host: `Stop-Process -Id <pid> -Force` — child WebView2/GPU/utility processes exit with their host; SysView never enumerates or kills children directly.
+- On success returns:
+  ```json
+  {"status":"success","host":"Teams","pid":12345,"message":"Sent restart signal to Teams (PID 12345)"}
+  ```
+  On PowerShell failure returns `500 {error:"Failed to restart host", details: ...}`.
+
+**How to use:**
+1. Open the dashboard → **Runtime Groups** card (Teams/Code/Electron/Node) → find the **Restart host** button (`.btn-secondary.runtime-restart-btn`, per host row, `data-host`/`data-pid`).
+2. Click **Restart host** → confirmation dialog:
+   ```
+   Restart Teams? (PID 12345, 12 children, 2.1 GB)
+
+   This will close Teams and its embedded pages. Unsaved work will be lost. Windows may relaunch the app automatically, or you may need to start it manually.
+
+   Proceed?
+   ```
+3. Confirm → button shows “Restarting…” → result banner (`#runtime-restart-result`, `aria-live="polite"`) appears (success green / 400/403/429 warning / 500 danger, textContent only) and the dashboard auto-refreshes via `grabSnapshot()` so the RuntimeGroups list updates. Result banner reuses the same token styling as Reclaim/Cap fixers.
+
+**Host not children:**
+> Only the host PID is stopped. Children (WebView2 tabs, GPU, utility) are not killed individually — they terminate when their host exits. No mass-kill, no orphan scan, no `taskkill /T`.
+
+**Unsaved work warning:**
+> The confirmation explicitly warns: **“Unsaved work in Teams will be lost.”** Do not restart if you have unsent messages, unsaved documents, or in-progress calls in that host.
+
+**Manual relaunch note:**
+> Windows *may* auto-relaunch Teams/Outlook on close, but this is not guaranteed — you may need to start the app manually from Start / taskbar after the restart. The result message on success says `Sent restart signal…`; verify the host reappears in RuntimeGroups after the next snapshot poll.
+
+**Validation:**
+>| Input | Result |
+>|-------|--------|
+>| `{"host":"Teams","pid":12345,"confirm":true}` + token+origin | 200 success |
+>| missing `confirm` / `confirm:false` | 400 Confirmation required |
+>| missing `host` / `pid` or `pid` 0–4 | 400 Host and PID required |
+>| `pid` not found (`Get-Process` fails) | 400 PID not found |
+>| `pid` ≤4 (critical) | 400 Host and PID required (pre-PS), or 400 Not a runtime host |
+>| evil `Origin` / missing `X-SysView-Token` | 403 Forbidden origin / Missing or invalid capability token |
+>| concurrent POST while one in-flight | 429 Runtime restart already in progress |
+>| PowerShell `Stop-Process` fails | 500 Failed to restart host |
+>| GET | 405 Method not allowed. Use POST. |
+
+**Pid validation detail:**
+> `pid` must be `> 4` — PID 0 (System Idle) and PID 4 (System) are rejected at the handler before any PowerShell invocation. Any future `RequireToken`-like hardening will keep this floor; tests assert both `0` and `2` map to `400 Host and PID required`.
+
+**API contract (for scripts/RMM):**
+```http
+POST /api/runtime/restart
+Headers: X-SysView-Token: <capabilityToken>, Content-Type: application/json
+Body: {"host":"Teams","pid":12345,"confirm":true}
+Responses:
+  200 {status:"success", host:"Teams", pid:12345, message:"Sent restart signal to Teams (PID 12345)"}
+  400 {error:"Confirmation required"}
+  400 {error:"Host and PID required"}
+  400 {error:"PID not found"}
+  400 {error:"Not a runtime host"}
+  403 {error:"Missing or invalid capability token"}
+  403 {error:"Forbidden origin"}
+  405 {error:"Method not allowed. Use POST."}
+  429 {error:"Runtime restart already in progress"}
+  500 {error:"Failed to restart host", details: ...}
+  405 on GET
+```
+
 ## 💡 Troubleshooting WSL2 Memory Starvation
 
 If your computer is consistently running out of RAM and `vmmemWSL` is consuming upwards of 15GB+:

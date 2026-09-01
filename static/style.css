@@ -536,6 +536,14 @@ tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transpa
 .wsl-config-result.success { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--good); color: var(--text-1); }
 .wsl-config-result.warning { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--warn); color: var(--text-1); }
 .wsl-config-result.danger { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--danger); color: var(--text-1); }
+/* H5dT2: Runtime restart button + result banner */
+.runtime-restart-btn { margin-top: 0.5rem; margin-left: 0.5rem; }
+.runtime-restart-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.runtime-restart-result { margin-top: 0.5rem; font-size: 0.82rem; line-height: 1.5; min-height: 1.2rem; }
+.runtime-restart-result:empty { display: none; }
+.runtime-restart-result.success { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--good); color: var(--text-1); }
+.runtime-restart-result.warning { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--warn); color: var(--text-1); }
+.runtime-restart-result.danger { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--danger); color: var(--text-1); }
 /* WSL */
 .wsl-content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .wsl-status-card, .wsl-advice-card {

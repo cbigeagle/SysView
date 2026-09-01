@@ -1160,6 +1160,56 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
                 });
             }
             detailsWrap.appendChild(list);
+            // H5dT2: Restart host button per card
+            const firstPid = pids.length > 0 ? pids[0] : 0;
+            const restartBtn=document.createElement('button');
+            restartBtn.className='btn-secondary runtime-restart-btn';
+            restartBtn.setAttribute('data-host', host);
+            restartBtn.setAttribute('data-pid', String(firstPid));
+            restartBtn.setAttribute('data-count', String(group.Count||0));
+            restartBtn.setAttribute('data-mem', formatBytes(group.TotalWorkingSet||0));
+            restartBtn.title='Restart host';
+            restartBtn.textContent='Restart host';
+            restartBtn.addEventListener('click', async function(e){
+                e.stopPropagation();
+                const token = await ensureToken();
+                if(!token){ alert('Missing capability token \u2014 reload the page.'); return; }
+                const h = restartBtn.getAttribute('data-host') || host;
+                const pid = parseInt(restartBtn.getAttribute('data-pid')||String(firstPid),10);
+                const count = group.Count||0;
+                const mem = formatBytes(group.TotalWorkingSet||0);
+                const confirmMsg = 'Restart '+h+'? (PID '+pid+', '+count+' children, '+mem+')\n\nThis will close '+h+' and its embedded pages. Unsaved work will be lost. Windows may relaunch the app automatically, or you may need to start it manually.\n\nProceed?';
+                if(!confirm(confirmMsg)) return;
+                restartBtn.disabled=true;
+                const origText=restartBtn.textContent;
+                restartBtn.textContent='Restarting...';
+                const resultEl=document.getElementById('runtime-restart-result');
+                if(resultEl){ resultEl.className='runtime-restart-result'; resultEl.textContent='Restarting...'; }
+                try{
+                    const res=await fetch('/api/runtime/restart', { method:'POST', headers:{ 'Content-Type':'application/json', 'X-SysView-Token': token }, body: JSON.stringify({ host: h, pid: pid, confirm: true }) });
+                    const bodyText=await res.text();
+                    let data=null; try{ data=JSON.parse(bodyText); }catch{}
+                    if(res.ok && data){
+                        const msg=data.message || ('Sent restart signal to '+h+' (PID '+pid+')');
+                        const details=data.details ? ' '+data.details : '';
+                        if(resultEl){ resultEl.className='runtime-restart-result success'; resultEl.textContent=msg+details; }
+                    } else if(res.status===400 || res.status===403 || res.status===429){
+                        const msg=data && (data.error || data.details) ? (data.error || data.details) : bodyText.slice(0,300);
+                        if(resultEl){ resultEl.className='runtime-restart-result warning'; resultEl.textContent=msg || ('Request failed ('+res.status+')'); }
+                    } else {
+                        const msg=data && (data.error || data.details) ? (data.error || data.details) : bodyText.slice(0,400);
+                        if(resultEl){ resultEl.className='runtime-restart-result danger'; resultEl.textContent='Failed to restart host ('+res.status+'): '+msg; }
+                    }
+                } catch(err){
+                    const resultEl2=document.getElementById('runtime-restart-result');
+                    if(resultEl2){ resultEl2.className='runtime-restart-result danger'; resultEl2.textContent='Failed to restart host: '+err.message; }
+                } finally {
+                    restartBtn.textContent=origText;
+                    restartBtn.disabled=false;
+                    try{ await grabSnapshot(); }catch{}
+                }
+            });
+            detailsWrap.appendChild(restartBtn);
             card.appendChild(header);
             card.appendChild(detailsWrap);
             const toggle=function(){

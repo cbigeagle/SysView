@@ -222,6 +222,97 @@ func TestHandleWslConfig_MethodNotAllowed(t *testing.T) {
 		t.Fatalf("want 405 got %d", rr.Code)
 	}
 }
+func TestHandleRuntimeRestart_RequiresToken(t *testing.T) {
+	capabilityToken = "test-token-123"
+	body := strings.NewReader(`{"host":"Teams","pid":12345,"confirm":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/restart", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleRuntimeRestart(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("want 403 without token, got %d body %s", rr.Code, rr.Body.String())
+	}
+}
+func TestHandleRuntimeRestart_OriginRejected(t *testing.T) {
+	capabilityToken = "test-token-123"
+	body := strings.NewReader(`{"host":"Teams","pid":12345,"confirm":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/restart", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Header.Set("Origin", "https://evil.example")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleRuntimeRestart(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("want 403 for evil origin, got %d body %s", rr.Code, rr.Body.String())
+	}
+}
+func TestHandleRuntimeRestart_RequiresConfirm(t *testing.T) {
+	capabilityToken = "test-token-123"
+	body := strings.NewReader(`{"host":"Teams","pid":12345}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/restart", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleRuntimeRestart(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 without confirm, got %d body %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Confirmation required") {
+		t.Fatalf("want Confirmation required, got %s", rr.Body.String())
+	}
+}
+func TestHandleRuntimeRestart_MethodNotAllowed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/runtime/restart", nil)
+	rr := httptest.NewRecorder()
+	handleRuntimeRestart(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("want 405 got %d", rr.Code)
+	}
+}
+func TestHandleRuntimeRestart_RateLimit(t *testing.T) {
+	capabilityToken = "test-token-123"
+	runtimeRestartSem <- struct{}{}
+	defer func() { <-runtimeRestartSem }()
+	body := strings.NewReader(`{"host":"Teams","pid":12345,"confirm":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/restart", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleRuntimeRestart(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("want 429 got %d body %s", rr.Code, rr.Body.String())
+	}
+}
+func TestHandleRuntimeRestart_InvalidPid(t *testing.T) {
+	capabilityToken = "test-token-123"
+	body := strings.NewReader(`{"host":"Teams","pid":0,"confirm":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime/restart", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleRuntimeRestart(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for invalid pid, got %d body %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Host and PID required") {
+		t.Fatalf("want Host and PID required, got %s", rr.Body.String())
+	}
+	body2 := strings.NewReader(`{"host":"Teams","pid":2,"confirm":true}`)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/runtime/restart", body2)
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-SysView-Token", "test-token-123")
+	req2.Host = "localhost:22880"
+	rr2 := httptest.NewRecorder()
+	handleRuntimeRestart(rr2, req2)
+	if rr2.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for pid 2, got %d body %s", rr2.Code, rr2.Body.String())
+	}
+}
 func abs(x int64) int64 {
 	if x < 0 {
 		return -x
