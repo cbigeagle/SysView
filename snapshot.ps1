@@ -59,10 +59,14 @@ try {
     $standbyBytes = [int64]($memPerf.StandbyCacheCoreBytes + $memPerf.StandbyCacheNormalPriorityBytes + $memPerf.StandbyCacheReserveBytes)
     if (-not $standbyBytes) { $standbyBytes = 0 }
 
-    # Try Modified list if present
+    # FreeAndZero and Modified are mutually exclusive with InUse/Standby
     try {
-        $prop = $memPerf.PSObject.Properties['ModifiedPageListBytes']
-        if ($prop -and $null -ne $prop.Value) { $modifiedBytes = [int64]$prop.Value }
+        $freeBytes = [int64]$memPerf.FreeAndZeroPageListBytes
+        if (-not $freeBytes) { $freeBytes = 0 }
+    } catch { $freeBytes = 0 }
+    try {
+        $modifiedBytes = [int64]$memPerf.ModifiedPageListBytes
+        if (-not $modifiedBytes) { $modifiedBytes = 0 }
     } catch { $modifiedBytes = 0 }
 
     $nonpagedBytes = [int64]$memPerf.PoolNonpagedBytes
@@ -71,18 +75,14 @@ try {
     $hwReservedBytes = $installedBytes - $totalVisibleBytes
     if ($hwReservedBytes -lt 0) { $hwReservedBytes = 0 }
 
-    $inUseBytes = $totalVisibleBytes - $availableBytes
+    $inUseBytes = $totalVisibleBytes - $availableBytes - $modifiedBytes
     if ($inUseBytes -lt 0) { $inUseBytes = 0 }
 
-    # Free/zeroed = visible minus inUse, standby, modified (mutually exclusive)
-    $freeBytes = $totalVisibleBytes - $inUseBytes - $standbyBytes - $modifiedBytes
-    if ($freeBytes -lt 0) { $freeBytes = 0 }
-
-    # Invariants
+    # Invariants — visible = InUse(exclusive) + Standby + Modified + FreeAndZero
     $visibleSum = $inUseBytes + $standbyBytes + $modifiedBytes + $freeBytes
     $tolerance = [int64](10 * 1024 * 1024) # 10 MB
     if ([Math]::Abs($visibleSum - $totalVisibleBytes) -gt $tolerance) {
-        $errors += @{ provider = "memory"; message = "Invariant violation: visible sum $visibleSum != visible $totalVisibleBytes (tolerance $tolerance)" }
+        $errors += @{ provider = "memory"; message = "Invariant violation: visible sum $visibleSum != visible $totalVisibleBytes (tolerance $tolerance) standby=$standbyBytes free=$freeBytes modified=$modifiedBytes inUse=$inUseBytes available=$availableBytes" }
     }
     if ([Math]::Abs(($totalVisibleBytes + $hwReservedBytes) - $installedBytes) -gt $tolerance) {
         $errors += @{ provider = "memory"; message = "Invariant violation: visible+reserved != installed" }
