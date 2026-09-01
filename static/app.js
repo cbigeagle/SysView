@@ -1,3 +1,9 @@
+// H1T2 test hook: pure helper for memory unavailable detection (providers.memory === 'unavailable' or zero bytes)
+function isMemUnavailable(providers, mem) {
+	return (providers && providers.memory === 'unavailable') || !mem || (mem.VisiblePhysicalBytes === 0 && mem.TotalPhysicalBytes === 0);
+}
+if (typeof window !== 'undefined') { window.isMemUnavailable = isMemUnavailable; window.__memUnavailable = isMemUnavailable; }
+
 document.addEventListener('DOMContentLoaded', () => {
     // ── Theme: semantic tokens, persisted, system fallback ──
     const themeSelect = document.getElementById('theme-select');
@@ -287,7 +293,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 2. RAM calculations — use VisiblePhysicalBytes for OS utilization (installed = visible + hardware reserved)
         const mem = data.Memory;
         const providers = (data._envelope && data._envelope.providers) || {};
-        const memUnavailable = providers.memory === 'unavailable' || !mem || (mem.VisiblePhysicalBytes === 0 && mem.TotalPhysicalBytes === 0);
+        const memUnavailable = isMemUnavailable(providers, mem);
         if (memUnavailable) {
             ramUsedPctSpan.textContent = 'Unavailable';
             ramUsedRatioSpan.textContent = 'Memory provider unavailable';

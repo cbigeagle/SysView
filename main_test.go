@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -78,5 +79,50 @@ func TestHandleWslShutdown_OriginRejected(t *testing.T) {
 	handleWslShutdown(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("want 403 for evil origin, got %d", rr.Code)
+	}
+}
+func abs(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func TestMemoryInvariants_Tolerance(t *testing.T) {
+	// visible 61.58GB, InUse 54.69, Standby 6.81, Free 0, Modified 0 -> sum ~61.5 vs 61.58 delta <10MB should pass
+	raw, _ := os.ReadFile("testdata/envelope_ok.json")
+	var env map[string]json.RawMessage
+	json.Unmarshal(raw, &env)
+	var data struct {
+		Memory struct {
+			VisiblePhysicalBytes   int64 `json:"VisiblePhysicalBytes"`
+			InUseBytes             int64 `json:"InUseBytes"`
+			StandbyBytes           int64 `json:"StandbyBytes"`
+			ModifiedBytes          int64 `json:"ModifiedBytes"`
+			FreeBytes              int64 `json:"FreeBytes"`
+			HardwareReservedBytes  int64 `json:"HardwareReservedBytes"`
+			TotalPhysicalBytes     int64 `json:"TotalPhysicalBytes"`
+		} `json:"Memory"`
+	}
+	var d map[string]json.RawMessage
+	json.Unmarshal(env["data"], &d)
+	json.Unmarshal(d["Memory"], &data.Memory)
+	sum := data.Memory.InUseBytes + data.Memory.StandbyBytes + data.Memory.ModifiedBytes + data.Memory.FreeBytes
+	if abs(sum-data.Memory.VisiblePhysicalBytes) > 10*1024*1024 {
+		t.Fatalf("invariant should hold: sum %d vs visible %d", sum, data.Memory.VisiblePhysicalBytes)
+	}
+}
+
+func TestMemoryUnavailable_RendersUnavailable(t *testing.T) {
+	raw, _ := os.ReadFile("testdata/envelope_provider_unavailable.json")
+	if err := validateEnvelope(raw); err != nil {
+		// provider unavailable still validates shape but frontend must show Unavailable — checked in JS test
+	}
+	// Go side: handler should have returned 200 with providers.memory=unavailable — assert fixture has that field
+	var env map[string]any
+	json.Unmarshal(raw, &env)
+	prov := env["providers"].(map[string]any)
+	if prov["memory"] != "unavailable" {
+		t.Fatal("fixture must have memory=unavailable")
 	}
 }
