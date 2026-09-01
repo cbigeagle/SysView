@@ -84,6 +84,63 @@ func TestHandleWslShutdown_OriginRejected(t *testing.T) {
 		t.Fatalf("want 403 for evil origin, got %d", rr.Code)
 	}
 }
+func TestHandleReclaimStandby_RequiresToken(t *testing.T) {
+	capabilityToken = "test-token-123"
+	req := httptest.NewRequest(http.MethodPost, "/api/reclaim/standby", nil)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handleReclaimStandby(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("want 403 without token, got %d", rr.Code)
+	}
+}
+func TestHandleReclaimStandby_OriginRejected(t *testing.T) {
+	capabilityToken = "test-token-123"
+	req := httptest.NewRequest(http.MethodPost, "/api/reclaim/standby", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleReclaimStandby(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("want 403 for evil origin, got %d", rr.Code)
+	}
+}
+func TestHandleReclaimStandby_RequiresConfirm(t *testing.T) {
+	capabilityToken = "test-token-123"
+	req := httptest.NewRequest(http.MethodPost, "/api/reclaim/standby", nil)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleReclaimStandby(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 without confirm, got %d", rr.Code)
+	}
+}
+func TestHandleReclaimStandby_MethodNotAllowed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/reclaim/standby", nil)
+	rr := httptest.NewRecorder()
+	handleReclaimStandby(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("want 405 got %d", rr.Code)
+	}
+}
+func TestHandleReclaimStandby_RateLimit(t *testing.T) {
+	capabilityToken = "test-token-123"
+	reclaimSem <- struct{}{}
+	defer func() { <-reclaimSem }()
+	body := strings.NewReader(`{"confirm":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/reclaim/standby", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleReclaimStandby(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("want 429 got %d body %s", rr.Code, rr.Body.String())
+	}
+}
 func abs(x int64) int64 {
 	if x < 0 {
 		return -x
