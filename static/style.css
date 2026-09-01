@@ -213,6 +213,10 @@ header {
   box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 50%, transparent);
   animation: pulse 1.5s infinite ease-in-out;
 }
+.pulse-indicator.error {
+  background-color: var(--danger);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--danger) 50%, transparent);
+}
 
 /* Buttons — one strong accent per screen */
 .btn-primary {

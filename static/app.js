@@ -220,7 +220,7 @@ document.addEventListener('DOMContentLoaded', () => {
         refreshBtn.disabled = true;
         if (refreshIcon) refreshIcon.classList.add('spinning');
         const pulse = document.querySelector('.pulse-indicator');
-        if (pulse) pulse.classList.add('loading');
+        if (pulse) { pulse.classList.remove('error'); pulse.classList.add('loading'); }
         lastUpdatedSpan.textContent = 'Refreshing system telemetry...';
         
         try {
@@ -243,27 +243,36 @@ document.addEventListener('DOMContentLoaded', () => {
             
         } catch (error) {
             console.error('Error fetching snapshot:', error);
-            lastUpdatedSpan.textContent = 'Error fetching snapshot';
-            
-            // Fallback content in case of server loss
-            diagnosticInsightsContainer.innerHTML = '';
-            const div = document.createElement('div');
-            div.className = 'insight-item danger';
-            div.innerHTML = `<div class="insight-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></div><div class="insight-content"><h4>Failed to communicate with SysView service</h4><p>Verify that <code>SysView.exe</code> is running locally and hasn't been closed.</p><p class="wsl-note">Details: ${String(error.message || error).slice(0,300)}</p></div>`;
-            diagnosticInsightsContainer.appendChild(div);
+            const pulseErr = document.querySelector('.pulse-indicator');
+            if (pulseErr) { pulseErr.classList.remove('loading'); pulseErr.classList.add('error'); }
+            // Keep previous data visible, but show error in badge
+            // If we have no previous data, show full error card
+            if (!currentData || !currentData.Memory) {
+                lastUpdatedSpan.textContent = 'Error fetching snapshot';
+                diagnosticInsightsContainer.innerHTML = '';
+                const div = document.createElement('div');
+                div.className = 'insight-item danger';
+                div.innerHTML = `<div class="insight-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg></div><div class="insight-content"><h4>Failed to communicate with SysView service</h4><p>Verify that <code>SysView.exe</code> is running locally and hasn't been closed.</p><p class="wsl-note">Details: ${String(error.message || error).slice(0,300)}</p></div>`;
+                diagnosticInsightsContainer.appendChild(div);
+            } else {
+                // Have previous data — show inline error, keep dashboard
+                lastUpdatedSpan.textContent = `Last update: ${new Date().toLocaleTimeString()} — refresh failed (${String(error.message || error).slice(0,80)})`;
+            }
         } finally {
             refreshBtn.disabled = false;
             if (refreshIcon) refreshIcon.classList.remove('spinning');
             const pulse2 = document.querySelector('.pulse-indicator');
             if (pulse2) pulse2.classList.remove('loading');
+            // Do not clear error class here — it stays until next success
         }
     }
 
     function updateUI(data) {
-        // Update Timestamp
+        // Update Timestamp — clear error state
+        const pulseOk = document.querySelector('.pulse-indicator');
+        if (pulseOk) pulseOk.classList.remove('error');
         const now = new Date();
         lastUpdatedSpan.textContent = `Last update: ${now.toLocaleTimeString()}`;
-        // 1. Get process maps
         const allProcessesMap = {};
         let totalCpuUsed = 0.0;
         
