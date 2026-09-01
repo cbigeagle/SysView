@@ -252,6 +252,7 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     const dockerStrip = document.getElementById('docker-strip');
     const memoryHogsTable = document.getElementById('memory-hogs-table');
     const diagnosticInsightsContainer = document.getElementById('diagnostic-insights');
+    if (diagnosticInsightsContainer && !diagnosticInsightsContainer.hasAttribute('aria-live')) diagnosticInsightsContainer.setAttribute('aria-live', 'polite');
     const historyBadge = document.getElementById('history-badge');
     const historyIntervalSelect = document.getElementById('history-interval');
     const historyPauseBtn = document.getElementById('history-pause');
