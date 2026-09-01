@@ -247,6 +247,16 @@ header {
 .sparkline-wrap { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; }
 .sparkline { display: block; color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface-1)); border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
 .sparkline-delta { font-size: 0.72rem; color: var(--text-2); font-variant-numeric: tabular-nums; }
+/* H5aT1: trend + confidence tokens — reuse --good/--warn/--danger */
+.trend-up { color: var(--danger); }
+.trend-down { color: var(--good); }
+.trend-flat { color: var(--text-2); }
+.confidence-low { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface-1)); border: 1px solid color-mix(in srgb, var(--danger) 18%, transparent); border-radius: 999px; padding: 0.1rem 0.4rem; font-size: 0.72rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.confidence-med { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface-1)); border: 1px solid color-mix(in srgb, var(--warn) 18%, transparent); border-radius: 999px; padding: 0.1rem 0.4rem; font-size: 0.72rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.confidence-high { color: var(--good); background: color-mix(in srgb, var(--good) 10%, var(--surface-1)); border: 1px solid color-mix(in srgb, var(--good) 18%, transparent); border-radius: 999px; padding: 0.1rem 0.4rem; font-size: 0.72rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+#pressure-delta, #pressure-confidence { font-variant-numeric: tabular-nums; }
+#pressure-delta:empty, #pressure-confidence:empty { display: none; }
+.pressure-delta { font-variant-numeric: tabular-nums; }
 /* H1T4: tab bar + sortable headers + focus rings */
 .tab-bar { display: flex; gap: 0.35rem; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.35rem; margin: 0.6rem 0 1rem; overflow-x: auto; }
 .tab-bar [role="tab"] { appearance: none; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.45rem 0.85rem; font-family: var(--font-ui); font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease; }
@@ -467,11 +477,9 @@ tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transpa
 }
 .hog-badge-critical { color: var(--danger); background: color-mix(in srgb, var(--danger) 7%, var(--surface-1)); border-color: color-mix(in srgb, var(--danger) 18%, transparent); }
 .hog-badge-system   { color: var(--warn); background: color-mix(in srgb, var(--warn) 7%, var(--surface-1)); border-color: color-mix(in srgb, var(--warn) 18%, transparent); }
-.hog-mono { font-family: var(--font-mono); color: var(--text-2); }
-.hog-mem { font-weight: 680; color: var(--text-1); font-family: var(--font-mono); }
-.hog-cpu { font-family: var(--font-mono); }
-.hog-cpu--active { color: var(--info); }
-.hog-cpu--idle { color: var(--text-2); }
+.hog-mono { font-family: var(--font-mono); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.hog-mem { font-weight: 680; color: var(--text-1); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.hog-cpu { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 
 .hog-card { padding: 0.85rem 1rem; border-radius: var(--radius-sm); border-left: 3px solid var(--border); }
 .hog-card.safe { border-left-color: var(--good); background: color-mix(in srgb, var(--good) 6%, var(--surface-1)); }
@@ -503,6 +511,13 @@ tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transpa
 .insight-content h4 { font-size: 0.88rem; font-weight: 670; color: var(--text-1); margin-bottom: 0.25rem; }
 .insight-content p { font-size: 0.82rem; color: var(--text-2); line-height: 1.5; }
 .insight-content ul { margin-top: 0.45rem; padding-left: 1.1rem; font-size: 0.82rem; color: var(--text-2); line-height: 1.5; }
+/* H5aT2: evidence cards — Observed -> May mean -> Next safe check + confidence + elapsed */
+.evidence-meta { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.35rem; font-size: 0.8rem; color: var(--text-2); line-height: 1.5; }
+.evidence-observed, .evidence-maymean, .evidence-next, .evidence-confidence { font-variant-numeric: tabular-nums; }
+.evidence-observed { color: var(--text-1); }
+.evidence-maymean { color: var(--text-2); }
+.evidence-next { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.pool-trend { font-variant-numeric: tabular-nums; }
 
 /* WSL */
 .wsl-content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
@@ -551,10 +566,7 @@ footer p { font-size: 0.78rem; color: var(--text-2); }
 .volume-head{ display:flex; align-items:center; justify-content:space-between; gap:0.75rem; margin-bottom:0.5rem; }
 .volume-label{ font-weight:640; font-size:0.92rem; color:var(--text-1); font-family:var(--font-mono); }
 .volume-bar{ height:14px; background:var(--border); border-radius:999px; overflow:hidden; }
-.volume-fill{ height:100%; background:var(--accent); transition:width 0.4s ease; }
-.volume-fill.low{ background:var(--warn); }
-.volume-meta{ display:flex; justify-content:space-between; gap:1rem; font-size:0.78rem; color:var(--text-2); margin-top:0.4rem; flex-wrap:wrap; }
-.health-badge{ font-size:0.68rem; font-weight:700; letter-spacing:0.03em; text-transform:uppercase; padding:0.15rem 0.45rem; border-radius:999px; border:1px solid var(--border); }
+.volume-meta{ display:flex; justify-content:space-between; gap:1rem; font-size:0.78rem; color:var(--text-2); margin-top:0.4rem; flex-wrap:wrap; font-variant-numeric: tabular-nums; }
 .health-ok{ background:color-mix(in srgb, var(--good) 12%, var(--surface-1)); color:var(--good); border-color:color-mix(in srgb, var(--good) 22%, transparent); }
 .health-warn{ background:color-mix(in srgb, var(--warn) 14%, var(--surface-1)); color:var(--warn); border-color:color-mix(in srgb, var(--warn) 25%, transparent); }
 .startup-badge{ font-size:0.68rem; font-weight:650; letter-spacing:0.03em; text-transform:uppercase; padding:0.15rem 0.4rem; border-radius:999px; border:1px solid var(--border); background:var(--surface-2); color:var(--text-2); }

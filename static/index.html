@@ -140,7 +140,7 @@
 
             <!-- MEMORY DEEP DIVE SECTION -->
             <section class="dashboard-block memory-section">
-                <h2>Windows System Memory Breakdown</h2>
+                <h2>Windows System Memory Breakdown <span id="pressure-delta" aria-live="polite"></span> <span id="pressure-confidence" aria-live="polite"></span></h2>
                 <p class="section-desc">Windows does not allocate memory in a simple “Used” or “Free” split. High usage often reflects caching and driver allocations.</p>
                 
                 <!-- STACKED BAR CHART -->
@@ -166,6 +166,7 @@
                     <div class="detail-card nonpaged-card" id="nonpaged-detail-card">
                         <h3>Non-Paged Pool</h3>
                         <div class="detail-size" id="size-nonpaged">0.00 GB</div>
+                        <span id="pool-trend" class="pool-trend" aria-live="polite"></span>
                         <p class="detail-explanation">Kernel and driver memory that must stay in RAM. Sustained high values merit investigation with RAMMap or PoolMon.</p>
                     </div>
                     <div class="detail-card paged-card">
@@ -181,7 +182,7 @@
                 <h2>Diagnostic Recommendations</h2>
                 <p class="section-desc">Evaluation of current sample against thresholds. Confidence reflects single-sample limits.</p>
                 
-                <div class="insights-container" id="diagnostic-insights">
+                <div class="insights-container" id="diagnostic-insights" aria-live="polite">
                     <div class="insight-item info">
                         <div class="insight-icon">
                             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">

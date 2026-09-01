@@ -19,8 +19,137 @@ class HistoryStore {
     };
   }
 }
+// H5aT1: extended deltas + trend over last 10 for spark
+HistoryStore.prototype.deltasExtended = function() {
+  if (this.items.length < 2) return null;
+  const a = this.items[this.items.length - 2].envelope.data || this.items[this.items.length - 2].envelope;
+  const b = this.items[this.items.length - 1].envelope.data || this.items[this.items.length - 1].envelope;
+  const aMem = a.Memory || {};
+  const bMem = b.Memory || {};
+  const res = {
+    availableDelta: (bMem.AvailableBytes || 0) - (aMem.AvailableBytes || 0),
+    inUseDelta: (bMem.InUseBytes || 0) - (aMem.InUseBytes || 0),
+    poolDelta: (bMem.NonpagedPoolBytes || 0) - (aMem.NonpagedPoolBytes || 0),
+    standbyDelta: (bMem.StandbyBytes || 0) - (aMem.StandbyBytes || 0),
+    modifiedDelta: (bMem.ModifiedBytes || 0) - (aMem.ModifiedBytes || 0)
+  };
+  // trend over last 10 samples (or all if fewer)
+  if (this.items.length >= 2) {
+    const startIdx = Math.max(0, this.items.length - 10);
+    const first = this.items[startIdx].envelope.data || this.items[startIdx].envelope;
+    const last = this.items[this.items.length - 1].envelope.data || this.items[this.items.length - 1].envelope;
+    const fMem = first.Memory || {};
+    const lMem = last.Memory || {};
+    res.availableTrend = (lMem.AvailableBytes || 0) - (fMem.AvailableBytes || 0);
+    res.inUseTrend = (lMem.InUseBytes || 0) - (fMem.InUseBytes || 0);
+    res.poolTrend = (lMem.NonpagedPoolBytes || 0) - (fMem.NonpagedPoolBytes || 0);
+    res.standbyTrend = (lMem.StandbyBytes || 0) - (fMem.StandbyBytes || 0);
+    res.modifiedTrend = (lMem.ModifiedBytes || 0) - (fMem.ModifiedBytes || 0);
+  }
+  return res;
+};
 const historyStore = new HistoryStore(450);
 if (typeof window !== 'undefined') { window.__historyStore = historyStore; window.HistoryStore = HistoryStore; window.historyStore = historyStore; }
+
+// H5aT1: pure helpers — formatDelta + confidenceForSampleCount
+function formatDelta(bytes) {
+  if (bytes === 0 || bytes == null || Number.isNaN(bytes)) return '\u00B10 GB';
+  const abs = Math.abs(bytes);
+  const sign = bytes > 0 ? '+' : '-';
+  // Show GB with 2 decimals for >=0.5 GB (512 MB) else MB with 0 decimals — ensures 0.7 GB => 0.70 GB and 220 MB stays MB
+  if (abs >= 512 * 1024 * 1024) return sign + (abs / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  if (abs >= 1024 * 1024) return sign + (abs / (1024 * 1024)).toFixed(0) + ' MB';
+  if (abs >= 1024) return sign + (abs / 1024).toFixed(0) + ' KB';
+  return sign + abs + ' B';
+}
+function confidenceForSampleCount(n) {
+  const intervalMs = (typeof window !== 'undefined' && typeof window.autoInterval === 'number') ? window.autoInterval : 2000;
+  const elapsedSec = n * intervalMs / 1000;
+  if (n <= 2) return { label: 'Low', class: 'confidence-low', elapsedSec };
+  if (n <= 10) return { label: 'Med', class: 'confidence-med', elapsedSec };
+  return { label: 'High', class: 'confidence-high', elapsedSec };
+}
+if (typeof window !== 'undefined') { window.formatDelta = formatDelta; window.confidenceForSampleCount = confidenceForSampleCount; window.deltasExtended = function() { return historyStore.deltasExtended(); }; }
+if (typeof module !== 'undefined' && module.exports) { module.exports.formatDelta = formatDelta; module.exports.confidenceForSampleCount = confidenceForSampleCount; }
+// H5aT2: evidenceCard factory — div.insight-item with .evidence-meta (Observed -> May mean -> Next safe check + confidence + elapsed)
+function evidenceCard(opts) {
+  opts = opts || {};
+  const type = (opts.type === 'danger' || opts.type === 'warning' || opts.type === 'success' || opts.type === 'info') ? opts.type : 'info';
+  const div = document.createElement('div');
+  div.className = 'insight-item ' + type;
+  const icon = document.createElement('div');
+  icon.className = 'insight-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  let svg = '';
+  if (type === 'danger' || type === 'warning') svg = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
+  else if (type === 'success') svg = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>';
+  else svg = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>';
+  icon.innerHTML = svg;
+  const content = document.createElement('div');
+  content.className = 'insight-content';
+  const h4 = document.createElement('h4');
+  h4.textContent = opts.title || '';
+  content.appendChild(h4);
+  const meta = document.createElement('div');
+  meta.className = 'evidence-meta';
+  if (opts.observed != null && String(opts.observed).length) {
+    const row = document.createElement('div');
+    row.className = 'evidence-observed';
+    row.textContent = 'Observed: ' + String(opts.observed);
+    meta.appendChild(row);
+  }
+  if (opts.mayMean != null && String(opts.mayMean).length) {
+    const row = document.createElement('div');
+    row.className = 'evidence-maymean';
+    row.textContent = 'May mean: ' + String(opts.mayMean);
+    meta.appendChild(row);
+  }
+  if (opts.nextCheck != null && String(opts.nextCheck).length) {
+    const row = document.createElement('div');
+    row.className = 'evidence-next';
+    const t = document.createElement('span');
+    t.textContent = 'Next safe check: ' + String(opts.nextCheck) + ' ';
+    row.appendChild(t);
+    if (opts.confidenceLabel) {
+      const badge = document.createElement('span');
+      const lbl = String(opts.confidenceLabel);
+      badge.className = lbl === 'Low' ? 'confidence-low' : lbl === 'High' ? 'confidence-high' : 'confidence-med';
+      badge.textContent = lbl;
+      row.appendChild(badge);
+    }
+    if (opts.elapsedSec != null) {
+      const el = document.createElement('span');
+      el.className = 'evidence-elapsed';
+      const sec = Number(opts.elapsedSec);
+      const txt = sec >= 60 ? ' \u00B7 ' + Math.round(sec / 60) + ' min elapsed' : ' \u00B7 ' + sec + 's elapsed';
+      el.textContent = txt;
+      row.appendChild(el);
+    }
+    meta.appendChild(row);
+  } else if (opts.confidenceLabel) {
+    const row = document.createElement('div');
+    row.className = 'evidence-confidence';
+    const badge = document.createElement('span');
+    const lbl = String(opts.confidenceLabel);
+    badge.className = lbl === 'Low' ? 'confidence-low' : lbl === 'High' ? 'confidence-high' : 'confidence-med';
+    badge.textContent = lbl;
+    row.appendChild(badge);
+    if (opts.elapsedSec != null) {
+      const el = document.createElement('span');
+      const sec = Number(opts.elapsedSec);
+      const txt = sec >= 60 ? ' ' + Math.round(sec / 60) + ' min' : ' ' + sec + 's';
+      el.textContent = txt;
+      row.appendChild(el);
+    }
+    meta.appendChild(row);
+  }
+  content.appendChild(meta);
+  div.appendChild(icon);
+  div.appendChild(content);
+  return div;
+}
+if (typeof window !== 'undefined') { window.evidenceCard = evidenceCard; }
+if (typeof module !== 'undefined' && module.exports) { module.exports.evidenceCard = evidenceCard; }
 
 function buildExportPayload(envelope, {redact=true}={}){
   const clone = JSON.parse(JSON.stringify(envelope));
@@ -123,6 +252,7 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     const dockerStrip = document.getElementById('docker-strip');
     const memoryHogsTable = document.getElementById('memory-hogs-table');
     const diagnosticInsightsContainer = document.getElementById('diagnostic-insights');
+    if (diagnosticInsightsContainer && !diagnosticInsightsContainer.hasAttribute('aria-live')) diagnosticInsightsContainer.setAttribute('aria-live', 'polite');
     const historyBadge = document.getElementById('history-badge');
     const historyIntervalSelect = document.getElementById('history-interval');
     const historyPauseBtn = document.getElementById('history-pause');
@@ -178,6 +308,7 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     let currentData = null;
     // H1T3: AutoRefresh controller
     let autoTimer = null, autoInterval = 2000, autoPaused = false;
+    if (typeof window !== 'undefined') window.autoInterval = autoInterval;
     function stopAuto(){ clearInterval(autoTimer); autoTimer=null; }
     function startAuto(){ stopAuto(); if(autoPaused) return; autoTimer=setInterval(grabSnapshot, autoInterval); }
     function updateHistoryBadge(){
@@ -533,6 +664,73 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
             // Render mutually-exclusive bar
             renderMemoryBar(mem);
         }
+        // H5aT2: pool trend line below detail-size using formatDelta + confidence; also update #pool-trend span if exists
+        (function(){
+            const store = (typeof window !== 'undefined' && window.historyStore) ? window.historyStore : (typeof historyStore !== 'undefined' ? historyStore : null);
+            const n = store ? store.length : 0;
+            let poolTrendEl = document.getElementById('pool-trend');
+            if (!poolTrendEl && nonpagedDetailCard) {
+                poolTrendEl = document.createElement('div');
+                poolTrendEl.id = 'pool-trend';
+                poolTrendEl.setAttribute('aria-live', 'polite');
+                poolTrendEl.style.fontSize = '0.74rem';
+                poolTrendEl.style.fontVariantNumeric = 'tabular-nums';
+                poolTrendEl.style.marginTop = '0.35rem';
+                nonpagedDetailCard.appendChild(poolTrendEl);
+            }
+            if (!poolTrendEl) return;
+            const fmtFn2 = (typeof window !== 'undefined' && window.formatDelta) ? window.formatDelta : (typeof formatDelta !== 'undefined' ? formatDelta : null);
+            const confFn2 = (typeof window !== 'undefined' && window.confidenceForSampleCount) ? window.confidenceForSampleCount : (typeof confidenceForSampleCount !== 'undefined' ? confidenceForSampleCount : null);
+            if (n < 2 || !store || !store.deltasExtended) {
+                poolTrendEl.textContent = n === 0 ? '' : '(' + n + ' sample' + (n===1?'':'s') + ', collecting\u2026)';
+                poolTrendEl.className = 'trend-flat';
+                return;
+            }
+            const dd = store.deltasExtended();
+            if (!dd) { poolTrendEl.textContent = ''; return; }
+            const delta = dd.poolTrend != null ? dd.poolTrend : dd.poolDelta;
+            const nTrend = Math.min(n, 10);
+            const conf2 = confFn2 ? confFn2(nTrend) : { label: nTrend <= 2 ? 'Low' : nTrend <= 10 ? 'Med' : 'High', class: nTrend <= 2 ? 'confidence-low' : nTrend <= 10 ? 'confidence-med' : 'confidence-high', elapsedSec: nTrend * 2 };
+            const deltaStr = fmtFn2 ? fmtFn2(delta) : (delta > 0 ? '+' + (delta/(1024*1024)).toFixed(0) + ' MB' : (delta/(1024*1024)).toFixed(0) + ' MB');
+            const elapsed2 = conf2.elapsedSec;
+            const timeStr = elapsed2 >= 60 ? Math.round(elapsed2/60) + ' min' : elapsed2 + 's';
+            poolTrendEl.textContent = 'Trend ' + deltaStr + ' over ' + nTrend + ' samples (' + timeStr + ', ' + conf2.label + ')';
+            let tc2 = 'trend-flat';
+            if (delta > 0) tc2 = 'trend-up';
+            else if (delta < 0) tc2 = 'trend-down';
+            poolTrendEl.className = tc2;
+        })();
+        // H5aT1: pressure banner — deltasExtended + confidence
+        (function(){
+            const pd = document.getElementById('pressure-delta');
+            const pc = document.getElementById('pressure-confidence');
+            if(!pd || !pc) return;
+            const store = (typeof window !== 'undefined' && window.historyStore) ? window.historyStore : (typeof historyStore !== 'undefined' ? historyStore : null);
+            const n = store ? store.length : 0;
+            const confFn = (typeof window !== 'undefined' && window.confidenceForSampleCount) ? window.confidenceForSampleCount : (typeof confidenceForSampleCount !== 'undefined' ? confidenceForSampleCount : null);
+            const fmtFn = (typeof window !== 'undefined' && window.formatDelta) ? window.formatDelta : (typeof formatDelta !== 'undefined' ? formatDelta : null);
+            if(n < 2 || !store || !store.deltasExtended){
+                pd.textContent = n === 0 ? '' : '(' + n + ' sample' + (n===1?'':'s') + ', collecting\u2026)';
+                pc.textContent = '';
+                pc.className = '';
+                return;
+            }
+            const d = store.deltasExtended();
+            if(!d){ pd.textContent=''; pc.textContent=''; return; }
+            const memData = data.Memory || {};
+            const gb = function(v){ return (v/(1024*1024*1024)).toFixed(1); };
+            const availNow = memData.AvailableBytes || 0;
+            const availPrev = availNow - d.availableDelta;
+            const deltaStr = fmtFn ? fmtFn(d.availableDelta) : (d.availableDelta>0? '+'+(d.availableDelta/(1024*1024*1024)).toFixed(2)+' GB' : (d.availableDelta/(1024*1024*1024)).toFixed(2)+' GB');
+            const conf = confFn ? confFn(n) : {label: n<=2?'Low': n<=10?'Med':'High', class: n<=2?'confidence-low': n<=10?'confidence-med':'confidence-high', elapsedSec: n*2};
+            pd.textContent = 'Available ' + gb(availPrev) + '\u2192' + gb(availNow) + ' GB (' + deltaStr + ', ' + n + ' samples, ' + conf.elapsedSec + 's, ' + conf.label + ')';
+            let trendClass = 'trend-flat';
+            if(d.availableDelta > 0) trendClass = 'trend-down';
+            else if(d.availableDelta < 0) trendClass = 'trend-up';
+            pd.className = trendClass;
+            pc.textContent = conf.label;
+            pc.className = conf.class;
+        })();
         
         // Surface provider errors inline if any
         if (data._envelope && data._envelope.errors && data._envelope.errors.length) {
@@ -583,7 +781,8 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
         // 6.7 Startup
         renderStartup(data.Startup || []);
         // 7. Run diagnostics recommendations engine
-        runDiagnosticsEngine(mem, data.WebViewProcesses, allProcessesMap);
+        // 7. Run diagnostics recommendations engine — H5aT2 passes volumes/startup/wsl for evidence cards
+        runDiagnosticsEngine(mem, data.WebViewProcesses, allProcessesMap, data.Volumes || [], data.Startup || [], data.WSL || null);
     }
 
     function renderMemoryBar(mem) {
@@ -1352,162 +1551,209 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
             memoryHogsTable.appendChild(trDetail);
         });
     }
-
-    function runDiagnosticsEngine(mem, wvProcesses, allProcessesMap) {
+    function runDiagnosticsEngine(mem, wvProcesses, allProcessesMap, volumes, startup, wslData) {
         diagnosticInsightsContainer.innerHTML = '';
-        const insights = [];
         const visible = mem.VisiblePhysicalBytes || mem.TotalPhysicalBytes;
         const elapsed = (mem.CPUSampleSeconds || 0.3);
-
-        // 1. Non-paged pool — one sample cannot establish a leak; show evidence card
-        const nonPagedPoolGB = mem.NonpagedPoolBytes / (1024 * 1024 * 1024);
-        const poolPct = visible ? (mem.NonpagedPoolBytes / visible * 100).toFixed(2) : '0';
-        if (nonPagedPoolGB > 1.2) {
-            insights.push({
-                type: 'warning',
-                title: 'Elevated non-paged pool — investigate, not confirmed leak',
-                desc: `Observed: non-paged pool ${nonPagedPoolGB.toFixed(2)} GB (${poolPct}% of visible RAM) at ${new Date().toLocaleTimeString()}. One sample cannot establish a driver leak; pool size varies with RAM, workload, drivers, and uptime.`,
-                actions: [
-                    'Confidence: Low (single sample). Next safe checks: run RAMMap / PoolMon to identify pool tags, note driver versions, and compare after a clean reboot.',
-                    'If growth is sustained over 15–60 min under memory pressure, collect pool-tag evidence and update drivers from the vendor. Do not disable system components without tag evidence.'
-                ]
-            });
-        } else if (nonPagedPoolGB > 0.8) {
-            insights.push({
-                type: 'info',
-                title: 'Non-paged pool within elevated range — monitor trend',
-                desc: `Observed: ${ (nonPagedPoolGB*1024).toFixed(0)} MB (${poolPct}% of visible). No leak established from this snapshot; track trend.`,
-                actions: ['If you suspect growth, capture samples over time and compare pool tags before changing drivers.']
-            });
-        }
-
-        // 2. Standby cache — factual
-        const standbyGB = mem.StandbyBytes / (1024 * 1024 * 1024);
-        if (standbyGB > 8.0) {
-            insights.push({
-                type: 'info',
-                title: 'Large standby cache — expected behavior',
-                desc: `Observed: ${standbyGB.toFixed(1)} GB standby (file cache). Windows keeps recently used files in RAM for speed and releases this memory immediately when an app needs it.`,
-                actions: [
-                    'No action required. If you need to clear for a benchmark, use RAMMap > Empty Standby List.'
-                ]
-            });
-        }
-
-        // 3. WebView2 Heavy Instances — use summed working sets estimate note
-        const wvMemMB = wvProcesses.reduce((sum, p) => sum + p.WorkingSet, 0) / (1024 * 1024);
-        if (wvMemMB > 3000) {
-            const hostMems = {};
-            wvProcesses.forEach(p => {
-                const host = findHostApp(p, allProcessesMap);
-                hostMems[host.name] = (hostMems[host.name] || 0) + p.WorkingSet;
-            });
-            const topWvHost = Object.entries(hostMems).sort((a,b) => b[1] - a[1])[0];
-            
-            insights.push({
-                type: 'info',
-                title: 'High WebView2 summed working sets',
-                desc: `Observed: summed working sets ${wvMemMB.toFixed(0)} MB across ${wvProcesses.length} processes (shared pages may double-count). Top host: ${topWvHost[0]} ~${(topWvHost[1] / (1024*1024)).toFixed(0)} MB (estimate).`,
-                actions: [
-                    `Consider restarting ${topWvHost[0]} to release embedded pages.`,
-                    'Check app settings for hardware acceleration or extra tabs.'
-                ]
-            });
-        }
-
-        // 4. WebView2 CPU — disclose sample interval, avoid runaway claim from single sample
-        const highCpuWv = wvProcesses.filter(p => p.CPU > 5.0);
-        if (highCpuWv.length > 0) {
-            const worst = highCpuWv.sort((a,b) => b.CPU - a.CPU)[0];
-            const host = findHostApp(worst, allProcessesMap);
-            const role = getProcessRole(worst.CommandLine);
-            insights.push({
-                type: 'warning',
-                title: `WebView2 CPU observed at ${worst.CPU.toFixed(1)}% (sample ${elapsed.toFixed(2)}s)`,
-                desc: `Observed: PID ${worst.PID} (${role.role}) in ${host.name} at ${worst.CPU.toFixed(1)}% over a ${elapsed.toFixed(2)}s window (noisy; requires consecutive samples for confidence). Low confidence from single sample.`,
-                actions: [
-                    `If sustained, the page in ${host.name} may be busy. Restart the host and re-sample.`,
-                    'For Teams/Outlook, check add-ins or widgets.'
-                ]
-            });
-        }
-
-        // 5. General RAM pressure — based on visible, show evidence
+        const factory = (typeof window !== 'undefined' && window.evidenceCard) ? window.evidenceCard : (typeof evidenceCard !== 'undefined' ? evidenceCard : null);
+        const fmtFn = (typeof window !== 'undefined' && window.formatDelta) ? window.formatDelta : (typeof formatDelta !== 'undefined' ? formatDelta : null);
+        const confFn = (typeof window !== 'undefined' && window.confidenceForSampleCount) ? window.confidenceForSampleCount : (typeof confidenceForSampleCount !== 'undefined' ? confidenceForSampleCount : null);
+        const store = (typeof window !== 'undefined' && window.historyStore) ? window.historyStore : (typeof historyStore !== 'undefined' ? historyStore : null);
+        const n = store ? store.length : 0;
+        const dExt = (store && store.deltasExtended) ? store.deltasExtended() : null;
+        const confAll = confFn ? confFn(n || 1) : { label: (n||1) <= 2 ? 'Low' : (n||1) <= 10 ? 'Med' : 'High', class: (n||1) <= 2 ? 'confidence-low' : (n||1) <= 10 ? 'confidence-med' : 'confidence-high', elapsedSec: (n||1) * 2 };
+        const nTrend = Math.min(n || 1, 10);
+        const confTrend = confFn ? confFn(nTrend) : { label: nTrend <= 2 ? 'Low' : nTrend <= 10 ? 'Med' : 'High', class: nTrend <= 2 ? 'confidence-low' : nTrend <= 10 ? 'confidence-med' : 'confidence-high', elapsedSec: nTrend * 2 };
+        function mkCard(o){ if(!factory){ const d=document.createElement('div'); d.textContent=o.title||''; return d; } return factory(o); }
+        let added = 0;
+        const GB = 1024*1024*1024;
+        // 1. Memory pressure — also banner but also card via factory
         const usedPct = visible ? ((visible - mem.AvailableBytes) / visible * 100) : 0;
         if (usedPct > 88) {
-            const inUseGB = (mem.InUseBytes / (1024*1024*1024)).toFixed(1);
-            insights.push({
+            const inUseGB = (mem.InUseBytes / GB).toFixed(1);
+            const availGB = (mem.AvailableBytes / GB).toFixed(1);
+            const visGB = (visible / GB).toFixed(1);
+            const deltaStr = dExt && fmtFn ? fmtFn(dExt.availableDelta) : '';
+            const trendInfo = dExt && fmtFn ? ' Trend ' + fmtFn(dExt.availableTrend != null ? dExt.availableTrend : dExt.availableDelta) + ' over ' + nTrend + ' samples.' : '';
+            diagnosticInsightsContainer.appendChild(mkCard({
                 type: 'warning',
-                title: `Memory pressure elevated — ${usedPct.toFixed(0)}% of visible RAM in use`,
-                desc: `Observed: ${inUseGB} GB in use, ${ (mem.AvailableBytes/(1024*1024*1024)).toFixed(1)} GB available (visible ${(visible/(1024*1024*1024)).toFixed(1)} GB). Under pressure Windows may page to disk. Single-sample; confidence medium.`,
-                actions: [
-                    'Sort the Processes table by Private commit to find top contributors.',
-                    'Close or pause heavy workloads; check browser Memory Saver.'
-                ]
-            });
+                title: 'Memory pressure elevated \u2014 ' + usedPct.toFixed(0) + '% of visible RAM in use',
+                observed: inUseGB + ' GB in use, ' + availGB + ' GB available (visible ' + visGB + ' GB)' + (deltaStr ? ' (' + deltaStr + ')' : '') + trendInfo + ' at ' + new Date().toLocaleTimeString(),
+                mayMean: 'system may page to disk; foreground apps can stall',
+                nextCheck: 'Sort Processes by Private commit; close heavy workloads',
+                confidenceLabel: confAll.label,
+                elapsedSec: confAll.elapsedSec
+            }));
+            added++;
         }
-
+        // 2. Non-paged pool with trend poolDelta over last 10 samples (+220MB over 12 min, High)
+        const nonPagedPoolGB = mem.NonpagedPoolBytes / GB;
+        const poolPct = visible ? (mem.NonpagedPoolBytes / visible * 100).toFixed(2) : '0';
+        const poolDelta = dExt ? (dExt.poolTrend != null ? dExt.poolTrend : dExt.poolDelta) : null;
+        const poolDeltaStr = (poolDelta != null && fmtFn) ? fmtFn(poolDelta) : '';
+        const poolTrendLine = poolDeltaStr ? (poolDeltaStr + ' over ' + nTrend + ' samples, ' + confTrend.label) : '';
+        if (nonPagedPoolGB > 1.2) {
+            diagnosticInsightsContainer.appendChild(mkCard({
+                type: 'warning',
+                title: 'Elevated non-paged pool \u2014 investigate, not confirmed leak',
+                observed: 'non-paged pool ' + nonPagedPoolGB.toFixed(2) + ' GB (' + poolPct + '% of visible)' + (poolTrendLine ? ' [' + poolTrendLine + ']' : '') + ' at ' + new Date().toLocaleTimeString(),
+                mayMean: 'driver or kernel component may be holding memory; one sample cannot confirm a leak',
+                nextCheck: 'run RAMMap / PoolMon to identify pool tags, compare after reboot',
+                confidenceLabel: confTrend.label,
+                elapsedSec: confTrend.elapsedSec
+            }));
+            added++;
+        } else if (nonPagedPoolGB > 0.8) {
+            diagnosticInsightsContainer.appendChild(mkCard({
+                type: 'info',
+                title: 'Non-paged pool within elevated range \u2014 monitor trend',
+                observed: (nonPagedPoolGB * 1024).toFixed(0) + ' MB (' + poolPct + '% of visible)' + (poolTrendLine ? ' \u00B7 ' + poolTrendLine : ''),
+                mayMean: 'pool size varies with RAM, workload, drivers; no leak established',
+                nextCheck: 'capture samples over time and compare pool tags before changing drivers',
+                confidenceLabel: confTrend.label,
+                elapsedSec: confTrend.elapsedSec
+            }));
+            added++;
+        } else if (poolDeltaStr) {
+            // still show pool trend as info when not elevated but trend available
+            // only if we haven't already shown pool card and have at least 2 samples
+            if (n >= 2) {
+                const isUp = poolDelta > 50*1024*1024;
+                diagnosticInsightsContainer.appendChild(mkCard({
+                    type: isUp ? 'info' : 'info',
+                    title: 'Non-paged pool trend',
+                    observed: nonPagedPoolGB.toFixed(2) + ' GB (' + poolPct + '%) \u00B7 ' + poolTrendLine,
+                    mayMean: isUp ? 'pool growing; watch for driver growth' : 'pool stable',
+                    nextCheck: 're-sample after workload change',
+                    confidenceLabel: confTrend.label,
+                    elapsedSec: confTrend.elapsedSec
+                }));
+                added++;
+            }
+        }
+        // 3. Standby cache
+        const standbyGB = mem.StandbyBytes / GB;
+        if (standbyGB > 8.0) {
+            diagnosticInsightsContainer.appendChild(mkCard({
+                type: 'info',
+                title: 'Large standby cache \u2014 expected behavior',
+                observed: standbyGB.toFixed(1) + ' GB standby (file cache)',
+                mayMean: 'Windows keeps recently used files in RAM for speed; it releases immediately when an app needs it',
+                nextCheck: 'No action required; RAMMap > Empty Standby List for benchmark',
+                confidenceLabel: confAll.label,
+                elapsedSec: confAll.elapsedSec
+            }));
+            added++;
+        }
+        // 4. WebView2 heavy instances
+        const wvProcessesSafe = Array.isArray(wvProcesses) ? wvProcesses : [];
+        const wvMemMB = wvProcessesSafe.reduce((sum, p) => sum + (p.WorkingSet || 0), 0) / (1024 * 1024);
+        if (wvMemMB > 3000) {
+            const hostMems = {};
+            wvProcessesSafe.forEach(p => { const host = findHostApp(p, allProcessesMap || {}); hostMems[host.name] = (hostMems[host.name] || 0) + (p.WorkingSet || 0); });
+            const topWvHost = Object.entries(hostMems).sort((a,b) => b[1] - a[1])[0] || ['Unknown', 0];
+            diagnosticInsightsContainer.appendChild(mkCard({
+                type: 'info',
+                title: 'High WebView2 summed working sets',
+                observed: 'summed working sets ' + wvMemMB.toFixed(0) + ' MB across ' + wvProcessesSafe.length + ' processes; top host ' + topWvHost[0] + ' ~' + (topWvHost[1]/(1024*1024)).toFixed(0) + ' MB',
+                mayMean: 'embedded pages share memory; total may double-count shared pages',
+                nextCheck: 'restart ' + topWvHost[0] + ' to release pages; check hardware acceleration',
+                confidenceLabel: confAll.label,
+                elapsedSec: confAll.elapsedSec
+            }));
+            added++;
+        }
+        // 5. WebView2 CPU
+        const highCpuWv = wvProcessesSafe.filter(p => (p.CPU || 0) > 5.0);
+        if (highCpuWv.length > 0) {
+            const worst = highCpuWv.sort((a,b) => (b.CPU||0)-(a.CPU||0))[0];
+            const host = findHostApp(worst, allProcessesMap || {});
+            const role = getProcessRole(worst.CommandLine);
+            diagnosticInsightsContainer.appendChild(mkCard({
+                type: 'warning',
+                title: 'WebView2 CPU observed at ' + worst.CPU.toFixed(1) + '% (sample ' + elapsed.toFixed(2) + 's)',
+                observed: 'PID ' + worst.PID + ' (' + role.role + ') in ' + host.name + ' at ' + worst.CPU.toFixed(1) + '% over ' + elapsed.toFixed(2) + 's window',
+                mayMean: 'page or renderer may be busy; single sample is noisy',
+                nextCheck: 'restart host and re-sample; check add-ins',
+                confidenceLabel: 'Low',
+                elapsedSec: Math.round(elapsed)
+            }));
+            added++;
+        }
+        // 6. WSL — show card when WSL active
+        (function(){
+            const wsl = wslData;
+            const hasWslProc = (allProcessesMap && Object.values(allProcessesMap).some(function(p){ return p && p.Name && String(p.Name).toLowerCase()==='vmmemwsl'; })) || false;
+            const hasRunningDistros = wsl && wsl.Distros && wsl.Distros.some(function(d){ return String(d.State).toLowerCase()==='running'; });
+            if (hasWslProc || hasRunningDistros) {
+                const distNames = (wsl && wsl.Distros) ? wsl.Distros.map(function(d){ return d.Name; }).join(', ') : '';
+                diagnosticInsightsContainer.appendChild(mkCard({
+                    type: 'info',
+                    title: 'WSL2 active',
+                    observed: (hasRunningDistros ? 'running distros: ' + distNames : 'vmmemWSL process active') + (hasWslProc ? ' (VM memory held)' : ''),
+                    mayMean: 'WSL2 holds VM memory until wsl --shutdown',
+                    nextCheck: 'use Release WSL Memory button if reclaim needed',
+                    confidenceLabel: confAll.label,
+                    elapsedSec: confAll.elapsedSec
+                }));
+                added++;
+            }
+        })();
+        // 7. Volumes low-space (<10% free -> warning evidence card)
+        (function(){
+            const vols = Array.isArray(volumes) ? volumes : [];
+            vols.forEach(function(v){
+                const size = v.SizeBytes || 0;
+                const free = v.FreeBytes || 0;
+                if (size <= 0) return;
+                const pctFree = (free / size) * 100;
+                if (pctFree < 10) {
+                    const freeGB = (free / GB).toFixed(2);
+                    const sizeGB = (size / GB).toFixed(2);
+                    diagnosticInsightsContainer.appendChild(mkCard({
+                        type: 'warning',
+                        title: 'Low free space on ' + (v.DeviceID || 'volume'),
+                        observed: freeGB + ' GB free of ' + sizeGB + ' GB (' + pctFree.toFixed(1) + '% free) on ' + (v.DeviceID || 'volume') + (v.Label ? ' (' + v.Label + ')' : ''),
+                        mayMean: 'disk pressure may slow updates, paging, and caching',
+                        nextCheck: 'Storage Sense or free disk space',
+                        confidenceLabel: 'High',
+                        elapsedSec: confAll.elapsedSec
+                    }));
+                    added++;
+                }
+            });
+        })();
+        // 8. Startup triage (if Startup.length>20 -> info card)
+        (function(){
+            const list = Array.isArray(startup) ? startup : [];
+            if (list.length > 20) {
+                diagnosticInsightsContainer.appendChild(mkCard({
+                    type: 'info',
+                    title: 'Startup triage: ' + list.length + ' autostart entries',
+                    observed: list.length + ' startup entries (registry, startup folder, services)',
+                    mayMean: 'high autostart count may extend boot time and background load',
+                    nextCheck: 'review Startup tab and disable unused entries',
+                    confidenceLabel: 'High',
+                    elapsedSec: confAll.elapsedSec
+                }));
+                added++;
+            }
+        })();
         // If no anomalies found
-        if (insights.length === 0) {
-            insights.push({
+        if (added === 0) {
+            diagnosticInsightsContainer.appendChild(mkCard({
                 type: 'success',
                 title: 'No thresholds exceeded in this sample',
-                desc: 'Observed sample is within current thresholds. This is a single-point view; sustained conditions require history.',
-                actions: []
-            });
+                observed: 'sample within current thresholds',
+                mayMean: 'system not showing pressure in this snapshot',
+                nextCheck: 're-sample after workload change; history gives confidence',
+                confidenceLabel: confAll.label,
+                elapsedSec: confAll.elapsedSec
+            }));
         }
-
-        // Render to DOM — safe text handling
-        insights.forEach(ins => {
-            const div = document.createElement('div');
-            div.className = `insight-item ${ins.type}`;
-            
-            let iconSvg = '';
-            if (ins.type === 'danger' || ins.type === 'warning') {
-                iconSvg = `
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
-                        <line x1="12" y1="9" x2="12" y2="13"></line>
-                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
-                    </svg>
-                `;
-            } else if (ins.type === 'success') {
-                iconSvg = `
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                    </svg>
-                `;
-            } else {
-                iconSvg = `
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <line x1="12" y1="16" x2="12" y2="12"></line>
-                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                    </svg>
-                `;
-            }
-
-            let actionsHtml = '';
-            if (ins.actions.length > 0) {
-                actionsHtml = `
-                    <ul>
-                        ${ins.actions.map(act => `<li>${act}</li>`).join('')}
-                    </ul>
-                `;
-            }
-
-            div.innerHTML = `
-                <div class="insight-icon">${iconSvg}</div>
-                <div class="insight-content">
-                    <h4>${ins.title}</h4>
-                    <p>${ins.desc}</p>
-                    ${actionsHtml}
-                </div>
-            `;
-            diagnosticInsightsContainer.appendChild(div);
-        });
+        if (typeof window !== 'undefined') window.runDiagnosticsEngine = runDiagnosticsEngine;
     }
+    if (typeof window !== 'undefined') window.runDiagnosticsEngine = runDiagnosticsEngine;
 
     // H2T3: Volumes panel
     function renderVolumes(volumes){
@@ -1841,11 +2087,10 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     updateHogSortUI();
     // init startup header aria-sort
     _renderStartupFiltered();
-    // H1T3: history controls — interval + pause + auto-refresh wiring
     if(historyIntervalSelect){
         historyIntervalSelect.addEventListener('change', () => {
             const v = parseInt(historyIntervalSelect.value,10);
-            if([2000,5000,10000].includes(v)) autoInterval=v;
+            if([2000,5000,10000].includes(v)) { autoInterval=v; if (typeof window !== 'undefined') window.autoInterval = v; }
             if(!autoPaused) startAuto();
         });
     }
