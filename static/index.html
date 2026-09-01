@@ -298,8 +298,12 @@ memory=4GB</pre>
         <footer>
             <p>SysView Diagnostics — v0.1.0 · Local-only diagnostic utility</p>
             <p class="footer-note">Process memory details are collected via WMI/CIM. CPU is sampled over a short window; treat single samples as estimates.</p>
+            <div class="export-controls">
+                <button id="export-btn" class="btn-secondary">Export snapshot JSON</button>
+                <label><input type="checkbox" id="export-include-cmdline"> include command lines</label>
+                <span id="export-status" aria-live="polite"></span>
+            </div>
         </footer>
-    </div>
 
     <script src="app.js"></script>
 </body>

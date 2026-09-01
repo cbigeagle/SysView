@@ -22,6 +22,21 @@ class HistoryStore {
 const historyStore = new HistoryStore(450);
 if (typeof window !== 'undefined') { window.__historyStore = historyStore; window.HistoryStore = HistoryStore; window.historyStore = historyStore; }
 
+function buildExportPayload(envelope, {redact=true}={}){
+  const clone = JSON.parse(JSON.stringify(envelope));
+  clone.exportedAt = new Date().toISOString();
+  clone.exportNote = redact ? "CommandLine redacted by default; toggle to include" : "CommandLine included — may contain secrets";
+  if(redact && clone.data && clone.data.WebViewProcesses){
+    clone.data.WebViewProcesses.forEach(p=>{ if(p.CommandLine) p.CommandLine="[redacted]"; });
+  }
+  if(redact && clone.data && clone.data.AllProcesses){
+    clone.data.AllProcesses.forEach(p=>{ if(p.Path) { /* keep path but strip user — intentionally preserved */ } });
+  }
+  return clone;
+}
+if (typeof window !== 'undefined') window.buildExportPayload = buildExportPayload;
+if (typeof module !== 'undefined' && module.exports) { module.exports.buildExportPayload = buildExportPayload; module.exports.HistoryStore = HistoryStore; }
+
 // H1T4: pure comparator — stable sort mimic, string for name, numeric for others
 function sortProcesses(list, key, dir){
   const get={name:p=>p.Name.toLowerCase(), pid:p=>p.PID, private:p=>p.PrivateMemory, ws:p=>p.WorkingSet, cpu:p=>p.CPU}[key];
@@ -36,14 +51,14 @@ function sortProcesses(list, key, dir){
   });
 }
 if(typeof window!=='undefined'){ window.sortProcesses=sortProcesses; }
+if(typeof module!=='undefined' && module.exports){ module.exports.sortProcesses=sortProcesses; }
 
 // H1T2 test hook: pure helper for memory unavailable detection (providers.memory === 'unavailable' or zero bytes)
 function isMemUnavailable(providers, mem) {
 	return (providers && providers.memory === 'unavailable') || !mem || (mem.VisiblePhysicalBytes === 0 && mem.TotalPhysicalBytes === 0);
 }
 if (typeof window !== 'undefined') { window.isMemUnavailable = isMemUnavailable; window.__memUnavailable = isMemUnavailable; }
-
-document.addEventListener('DOMContentLoaded', () => {
+if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded', () => {
     // ── Theme: semantic tokens, persisted, system fallback ──
     const themeSelect = document.getElementById('theme-select');
     const THEME_KEY = 'sysview-theme';
@@ -1419,6 +1434,24 @@ document.addEventListener('DOMContentLoaded', () => {
             autoPaused = !autoPaused;
             if(autoPaused){ stopAuto(); historyPauseBtn.textContent='Resume'; }
             else { historyPauseBtn.textContent='Pause'; startAuto(); }
+        });
+    }
+    // H1T5: Export snapshot JSON — redacted by default
+    const exportBtn = document.getElementById('export-btn');
+    const exportIncludeCb = document.getElementById('export-include-cmdline');
+    const exportStatus = document.getElementById('export-status');
+    if(exportBtn){
+        exportBtn.addEventListener('click', ()=>{
+            const env = window.__historyStore?.latest() || (currentData?._envelope ? {capturedAt: currentData._envelope.capturedAt, schemaVersion: currentData._envelope.schemaVersion||1, providers: currentData._envelope.providers||{}, errors: currentData._envelope.errors||[], data: currentData} : currentData);
+            if(!env){ if(exportStatus) exportStatus.textContent="No snapshot yet"; return; }
+            const redact = exportIncludeCb ? !exportIncludeCb.checked : true;
+            const source = env.data ? env : {data: env, providers:{}, errors:[], capturedAt: new Date().toISOString(), schemaVersion:1};
+            const payload = buildExportPayload(source, {redact});
+            const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+            const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+            a.download=`SysView_snapshot_${new Date().toISOString().replace(/[:.]/g,'-')}.json`; a.click();
+            setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+            if(exportStatus) exportStatus.textContent=redact?"Exported (command lines redacted)":"Exported (command lines included)";
         });
     }
 
