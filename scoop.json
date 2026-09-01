@@ -1,0 +1,31 @@
+{
+    "version": "0.2.0",
+    "description": "Windows resource and memory diagnostics dashboard — single-binary, local-only.",
+    "homepage": "https://github.com/SysView/SysView",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/SysView/SysView/releases/download/v0.2.0/SysView_0.2.0_windows_amd64.zip",
+            "hash": "PLACEHOLDER_SHA256_REPLACE_ON_RELEASE",
+            "extract_dir": ""
+        }
+    },
+    "bin": "SysView.exe",
+    "shortcuts": [
+        [
+            "SysView.exe",
+            "SysView Diagnostics"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/SysView/SysView"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/SysView/SysView/releases/download/v$version/SysView_$version_windows_amd64.zip"
+            }
+        }
+    },
+    "notes": "Single binary — runs on 127.0.0.1 with a capability token. No admin required. Offline-capable."
+}

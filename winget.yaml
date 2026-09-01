@@ -1,0 +1,37 @@
+# winget manifest — SysView Diagnostics
+# Install: winget install --manifest winget.yaml  (or via winget-pkgs PR)
+PackageIdentifier: SysView.SysView
+PackageVersion: 0.2.0
+PackageName: SysView
+Publisher: SysView Contributors
+License: MIT
+ShortDescription: Windows resource and memory diagnostics dashboard — single-binary, local-only.
+Description: |
+  SysView is a local-only Windows diagnostics dashboard that maps RAM allocation,
+  groups Edge WebView2 / Electron / Node / Python runtime hosts, surfaces sensors
+  and Docker containers, and exports redacted snapshots. Single binary, no installer
+  dependencies, runs on 127.0.0.1 with a capability token.
+Homepage: https://github.com/SysView/SysView
+Moniker: sysview
+Tags:
+  - diagnostics
+  - memory
+  - webview2
+  - wsl2
+  - windows
+PackageUrl: https://github.com/SysView/SysView
+LicenseUrl: https://github.com/SysView/SysView/blob/main/LICENSE
+Copyright: Copyright (c) 2026 SysView Contributors
+MinimumOSVersion: 10.0.19041.0
+InstallerType: portable
+Scope: user
+FileExtensions:
+  - json
+Installers:
+  - Architecture: x64
+    InstallerType: portable
+    InstallerUrl: https://github.com/SysView/SysView/releases/download/v0.2.0/SysView_0.2.0_windows_amd64.zip
+    InstallerSha256: PLACEHOLDER_SHA256_REPLACE_ON_RELEASE
+    ProductCode: SysView 0.2.0
+ManifestType: singleton
+ManifestVersion: 1.6.0

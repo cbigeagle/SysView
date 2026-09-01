@@ -1,11 +1,11 @@
-# SysView System Snapshot Collector — v2
+# SysView System Snapshot Collector — v3
 # Returns a versioned envelope with provider status, invariants, and parsed WSL config.
 $ErrorActionPreference = 'Stop'
 $providers = @{}
 $errors = @()
 
 $capturedAt = (Get-Date).ToUniversalTime().ToString("o")
-$schemaVersion = 2
+$schemaVersion = 3
 
 # Helpers
 function Add-Error($provider, $msg) {
@@ -415,7 +415,162 @@ for ($i = 0; $i -lt $allProcesses.Count; $i++) {
     if ($allProcesses[$i].TcpConnectionCount -lt 0) { $allProcesses[$i].TcpConnectionCount = 0 }
 }
 
-# 5. Query WSL status and distros
+# 4f. RuntimeGroups — generalize WebView2 logic to electron/node/python/webview2
+$runtimeGroups = @()
+try {
+    $runtimeNames = @('msedgewebview2','electron','Code','node','python','pythonw')
+    $runtimeNameLower = $runtimeNames | ForEach-Object { $_.ToLower() }
+    # Build PID map for host resolution
+    $pidMap = @{}
+    foreach ($proc in $allProcesses) { $pidMap[[string]$proc.PID] = $proc }
+    # Helper: determine runtime string for a process, or $null if not runtime
+    function Get-RuntimeKind($proc) {
+        $n = ($proc.Name).ToLower()
+        $p = if ($proc.Path) { ($proc.Path).ToLower() } else { "" }
+        if ($n -eq 'msedgewebview2') { return 'webview2' }
+        if ($n -eq 'electron' -or $n -eq 'code' -or $p.Contains('electron')) { return 'electron' }
+        if ($n -eq 'node' -or $p.Contains('node')) { return 'node' }
+        if ($n -eq 'python' -or $n -eq 'pythonw' -or $p.Contains('python')) { return 'python' }
+        return $null
+    }
+    function Find-HostName($proc) {
+        $seen = @{}
+        $cur = $proc
+        for ($depth = 0; $depth -lt 12; $depth++) {
+            $ppid = [string]$cur.ParentPID
+            if (-not $ppid -or $ppid -eq "0" -or $seen.ContainsKey($ppid)) { break }
+            $seen[$ppid] = $true
+            if (-not $pidMap.ContainsKey($ppid)) {
+                # fallback: try CommandLine exe name from CIM
+                if ($cimProcesses.ContainsKey($ppid) -and $cimProcesses[$ppid].CommandLine) {
+                    $cl = [string]$cimProcesses[$ppid].CommandLine
+                    if ($cl -match '^\s*"?([^"]+)"?') { return [System.IO.Path]::GetFileNameWithoutExtension($Matches[1]) }
+                }
+                break
+            }
+            $parent = $pidMap[$ppid]
+            $pr = Get-RuntimeKind $parent
+            if (-not $pr) {
+                $h = $parent.Name
+                if (-not $h -and $cimProcesses.ContainsKey($ppid) -and $cimProcesses[$ppid].CommandLine) {
+                    $cl = [string]$cimProcesses[$ppid].CommandLine
+                    if ($cl -match '^\s*"?([^"]+)"?') { $h = [System.IO.Path]::GetFileNameWithoutExtension($Matches[1]) }
+                }
+                if ($h) { return $h }
+                return "unknown"
+            }
+            $cur = $parent
+        }
+        # fallback: direct parent name or exe from CommandLine
+        $origParent = [string]$proc.ParentPID
+        if ($pidMap.ContainsKey($origParent)) { return $pidMap[$origParent].Name }
+        if ($cimProcesses.ContainsKey([string]$proc.PID) -and $cimProcesses[[string]$proc.PID].CommandLine) {
+            $cl = [string]$cimProcesses[[string]$proc.PID].CommandLine
+            if ($cl -match '^\s*"?([^"]+)"?') { return [System.IO.Path]::GetFileNameWithoutExtension($Matches[1]) }
+        }
+        return "unknown"
+    }
+    $groupMap = @{}
+    foreach ($proc in $allProcesses) {
+        $isRuntime = $false
+        $lname = ($proc.Name).ToLower()
+        if ($runtimeNameLower -contains $lname) { $isRuntime = $true }
+        elseif ($proc.Path -and ($proc.Path.ToLower().Contains('electron') -or $proc.Path.ToLower().Contains('node') -or $proc.Path.ToLower().Contains('python'))) { $isRuntime = $true }
+        if (-not $isRuntime) { continue }
+        $rt = Get-RuntimeKind $proc
+        if (-not $rt) { continue }
+        $hostName = Find-HostName $proc
+        $key = "$rt|$hostName"
+        if (-not $groupMap.ContainsKey($key)) {
+            $groupMap[$key] = @{ Runtime = $rt; Host = $hostName; Count = 0; TotalWorkingSet = [int64]0; TotalCpu = 0.0; Pids = @() }
+        }
+        $g = $groupMap[$key]
+        $g.Count += 1
+        $g.TotalWorkingSet = [int64]($g.TotalWorkingSet + [int64]$proc.WorkingSet)
+        $g.TotalCpu = [Math]::Round($g.TotalCpu + [double]$proc.CPU, 2)
+        $g.Pids += [int]$proc.PID
+    }
+    foreach ($k in $groupMap.Keys) { $runtimeGroups += $groupMap[$k] }
+    Set-ProviderOk "runtimegroups"
+} catch {
+    Add-Error "runtimegroups" $_.Exception.Message
+    $runtimeGroups = @()
+}
+
+# 4g. Sensors — best-effort WMI thermal
+$sensors = @{ CpuTempC = $null }
+try {
+    $foundSensor = $false
+    try {
+        $tz = Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop
+        foreach ($t in $tz) {
+            if ($null -ne $t.CurrentTemperature) {
+                $kelvin10 = [double]$t.CurrentTemperature
+                $celsius = ($kelvin10 / 10.0) - 273.15
+                if ($celsius -gt -55 -and $celsius -lt 200) {
+                    $sensors.CpuTempC = [Math]::Round($celsius, 1)
+                    $foundSensor = $true
+                    break
+                }
+            }
+        }
+    } catch {}
+    if (-not $foundSensor) {
+        try {
+            $perfTz = Get-CimInstance -ClassName Win32_PerfFormattedData_Counters_ThermalZoneInformation -ErrorAction Stop
+            foreach ($pt in $perfTz) {
+                $tempVal = $null
+                try { $tempVal = $pt.Temperature } catch {}
+                if ($null -ne $tempVal) {
+                    $c = [double]$tempVal
+                    if ($c -gt -55 -and $c -lt 200) {
+                        $sensors.CpuTempC = [Math]::Round($c, 1)
+                        $foundSensor = $true
+                        break
+                    }
+                }
+            }
+        } catch {}
+    }
+    if ($foundSensor) { Set-ProviderOk "sensors" } else { $providers["sensors"] = "unavailable" }
+} catch {
+    Add-Error "sensors" $_.Exception.Message
+    $sensors = @{ CpuTempC = $null }
+}
+
+# 4h. Docker — docker ps try/catch capped 20
+$dockerData = @{ Containers = @() }
+try {
+    if (Get-Command docker -ErrorAction SilentlyContinue) {
+        try {
+            $rawLines = & docker ps --format "{{json .}}" 2>&1 | Where-Object { $_.Trim() -ne "" } | Select-Object -First 20
+            $containers = @()
+            foreach ($line in $rawLines) {
+                try {
+                    $obj = $line | ConvertFrom-Json -ErrorAction Stop
+                    $cid = ""; $cimg = ""; $cstate = ""; $cnames = ""
+                    try { $cid = [string]($obj.ID); if (-not $cid) { $cid = [string]($obj.Id) } } catch {}
+                    try { $cimg = [string]$obj.Image } catch {}
+                    try { $cstate = [string]$obj.State; if (-not $cstate) { $cstate = [string]$obj.Status } } catch {}
+                    try { $cnames = [string]$obj.Names; if (-not $cnames) { $cnames = [string]$obj.Name } } catch {}
+                    $containers += @{ Id = $cid; Image = $cimg; State = $cstate; Names = $cnames }
+                } catch {}
+            }
+            $dockerData.Containers = $containers
+            Set-ProviderOk "docker"
+        } catch {
+            Add-Error "docker" $_.Exception.Message
+            $dockerData.Containers = @()
+        }
+    } else {
+        $providers["docker"] = "absent"
+        $dockerData.Containers = @()
+    }
+} catch {
+    Add-Error "docker" $_.Exception.Message
+    $dockerData.Containers = @()
+}
+
 $wslDistros = @()
 $wslVersion = $null
 $wslConfigParsed = @{ exists = $false; memory = $null; rawMemory = $null; valid = $null; source = $null; errors = @() }
@@ -508,6 +663,9 @@ $data = @{
     Memory = $memoryData
     AllProcesses = $allProcesses
     WebViewProcesses = $webviewProcesses
+    RuntimeGroups = $runtimeGroups
+    Sensors = $sensors
+    Docker = $dockerData
     WSL = @{
         Distros = $wslDistros
         Version = $wslVersion
@@ -537,6 +695,9 @@ $legacy = @{
     Memory = $data.Memory
     AllProcesses = $data.AllProcesses
     WebViewProcesses = $data.WebViewProcesses
+    RuntimeGroups = $data.RuntimeGroups
+    Sensors = $data.Sensors
+    Docker = $data.Docker
     WSL = $data.WSL
     Network = $data.Network
     Volumes = $data.Volumes

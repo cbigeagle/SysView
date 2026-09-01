@@ -24,6 +24,57 @@ A modern, glassmorphic Windows resource and memory diagnostics dashboard designe
 
 ---
 
+## 📦 Install
+
+SysView is a **single binary** — no installer, no dependencies, fully **offline** after download. Data never leaves `[IP_ADDRESS]`; the server binds to loopback and requires a per-launch capability token.
+
+### winget (Windows Package Manager)
+
+```powershell
+# From winget-pkgs (once published)
+winget install SysView.SysView
+
+# Or install directly from this repo's manifest
+winget install --manifest winget.yaml
+```
+
+Manifest: [`winget.yaml`](winget.yaml) · PackageIdentifier `SysView.SysView` · version `0.2.0` · Scope `user` · portable/x64.
+
+### Scoop
+
+```powershell
+# Add bucket (if you publish a bucket) or install from local manifest
+scoop install scoop.json
+
+# With a bucket named sysview:
+# scoop bucket add sysview https://github.com/SysView/scoop-bucket
+# scoop install sysview
+```
+
+Manifest: [`scoop.json`](scoop.json) · `64bit` URL placeholder — replace `PLACEHOLDER_SHA256` on release · `bin` → `SysView.exe` · `checkver` tracks GitHub releases.
+
+### Manual — Build from Source
+
+Prerequisites: **Go 1.21+** on Windows.
+
+```powershell
+# Clone and build a stripped binary (~6 MB)
+git clone https://github.com/SysView/SysView.git
+cd SysView
+go build -ldflags "-s -w -X main.version=0.2.0 -X main.commit=$(git rev-parse --short HEAD)" -o SysView.exe
+
+# Run (auto-picks 22880, then 22881…)
+.\SysView.exe
+# Or pin a port
+.\SysView.exe -port 8080
+```
+
+The binary embeds `static/*` and `snapshot.ps1` — just copy `SysView.exe` anywhere.
+
+> License: [MIT](LICENSE) · See [`LICENSE`](LICENSE) for details.
+
+---
+
 ## 🚀 Getting Started
 
 ### Prerequisites

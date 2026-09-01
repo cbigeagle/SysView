@@ -59,6 +59,7 @@
             <button role="tab" aria-selected="true" data-tab="overview" id="tab-btn-overview" aria-controls="tab-overview" tabindex="0">Overview</button>
             <button role="tab" aria-selected="false" data-tab="processes" id="tab-btn-processes" aria-controls="tab-processes" tabindex="-1">Processes</button>
             <button role="tab" aria-selected="false" data-tab="webview" id="tab-btn-webview" aria-controls="tab-webview" tabindex="-1">WebView2</button>
+            <button role="tab" aria-selected="false" data-tab="runtimes" id="tab-btn-runtimes" aria-controls="tab-runtimes" tabindex="-1">Runtimes</button>
             <button role="tab" aria-selected="false" data-tab="wsl" id="tab-btn-wsl" aria-controls="tab-wsl" tabindex="-1">WSL</button>
             <button role="tab" aria-selected="false" data-tab="storage" id="tab-btn-storage" aria-controls="tab-storage" tabindex="-1">Storage</button>
             <button role="tab" aria-selected="false" data-tab="startup" id="tab-btn-startup" aria-controls="tab-startup" tabindex="-1">Startup</button>
@@ -66,6 +67,7 @@
 
         <!-- PANEL: Overview — quick-stats + memory + advice -->
         <section id="tab-overview" data-panel="overview" role="tabpanel" aria-labelledby="tab-btn-overview">
+            <div id="sensor-chips" class="sensor-strip" aria-label="Hardware sensors"></div>
             <!-- GLOBAL STATS CARDS -->
             <section class="quick-stats">
                 <div class="stat-card">
@@ -248,9 +250,24 @@
             </section>
         </section>
 
+        <!-- PANEL: Runtimes — unified RuntimeGroups -->
+        <section id="tab-runtimes" data-panel="runtimes" role="tabpanel" aria-labelledby="tab-btn-runtimes" hidden>
+            <section class="dashboard-block runtimes-section">
+                <div class="section-header">
+                    <div>
+                        <h2>Runtime Process Groups (WebView2/Electron/Node/Python)</h2>
+                        <p class="section-desc">Processes grouped by runtime and host application. Expand to see PIDs and resource totals.</p>
+                    </div>
+                    <div class="filter-controls">
+                        <input type="text" id="runtime-search" placeholder="Filter runtime or host...">
+                    </div>
+                </div>
+                <div id="runtime-groups" class="wv-groups-container"></div>
+            </section>
+        </section>
+
         <!-- PANEL: WSL -->
         <section id="tab-wsl" data-panel="wsl" role="tabpanel" aria-labelledby="tab-btn-wsl" hidden>
-            <section class="dashboard-block wsl-section" id="wsl-drilldown">
                 <div class="section-header">
                     <div>
                         <h2>WSL2 &amp; Container Virtualization</h2>
@@ -296,7 +313,7 @@ memory=4GB</pre>
                         <p class="wsl-note">On current Windows builds, WSL Settings also exposes memory options. Prefer Settings when available. See <a href="https://learn.microsoft.com/en-us/windows/wsl/wsl-config" target="_blank" rel="noopener">wsl-config docs</a>.</p>
                     </div>
                 </div>
-            </section>
+                <div id="docker-strip" class="docker-strip" aria-label="Docker containers"></div>
         </section>
 
         <!-- PANEL: Storage — volumes -->
@@ -340,7 +357,7 @@ memory=4GB</pre>
 
         <!-- FOOTER -->
         <footer>
-            <p>SysView Diagnostics — v0.1.0 · Local-only diagnostic utility</p>
+            <p id="footer-version" title="commit 47ed098">SysView Diagnostics — v0.2.0 · Local-only</p>
             <p class="footer-note">Process memory details are collected via WMI/CIM. CPU is sampled over a short window; treat single samples as estimates.</p>
             <div class="export-controls">
                 <button id="export-btn" class="btn-secondary">Export snapshot JSON</button>
@@ -350,6 +367,23 @@ memory=4GB</pre>
         </footer>
     </div>
 
+    <script>
+    // H3T3: footer version — prefer /api/config version when available, fallback to static v0.2.0
+    (function(){
+        var el = document.getElementById('footer-version');
+        if(!el) return;
+        try{
+            fetch('/api/config', {headers:{'X-Capability-Token': (window.__SYSVIEW_TOKEN||'')}})
+                .then(function(r){ return r.ok ? r.json() : null; })
+                .then(function(cfg){
+                    if(cfg && cfg.version){
+                        el.textContent = 'SysView Diagnostics \u2014 v' + cfg.version + ' \u00b7 Local-only';
+                        if(cfg.commit) el.title = 'commit ' + cfg.commit;
+                    }
+                }).catch(function(){});
+        }catch(e){}
+    })();
+    </script>
     <script src="app.js"></script>
 </body>
 </html>
