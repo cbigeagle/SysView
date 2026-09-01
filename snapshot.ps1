@@ -5,7 +5,7 @@ $providers = @{}
 $errors = @()
 
 $capturedAt = (Get-Date).ToUniversalTime().ToString("o")
-$schemaVersion = 1
+$schemaVersion = 2
 
 # Helpers
 function Add-Error($provider, $msg) {
@@ -170,6 +170,9 @@ foreach ($p in $processes) {
         Path = [string]$exePath
         CPU = [Math]::Round($cpuPercent, 2)
         CPUSampleSeconds = [Math]::Round($elapsed, 3)
+        IOReadBytes = [int64]0
+        IOWriteBytes = [int64]0
+        TcpConnectionCount = [int]0
     }
     $allProcesses += $procData
 
@@ -187,6 +190,230 @@ foreach ($p in $processes) {
     }
 }
 if (-not $providers.ContainsKey("processes")) { Set-ProviderOk "processes" }
+
+# 4b. Disk I/O per process (Win32_PerfRawData + fallback to Formatted)
+$ioMap = @{}
+try {
+    $gotIo = $false
+    try {
+        $perfRaw = Get-CimInstance Win32_PerfRawData_PerfProc_Process -ErrorAction Stop
+        foreach ($r in $perfRaw) {
+            $pidKey = [string]$r.IDProcess
+            if ($pidKey -eq "0" -or $pidKey -eq "_Total") { continue }
+            $readBytes = [int64]0
+            $writeBytes = [int64]0
+            try { $readBytes = [int64]$r.IOReadBytes } catch {}
+            try { $writeBytes = [int64]$r.IOWriteBytes } catch {}
+            if ($readBytes -lt 0) { $readBytes = 0 }
+            if ($writeBytes -lt 0) { $writeBytes = 0 }
+            $ioMap[$pidKey] = @{ Read = $readBytes; Write = $writeBytes }
+        }
+        $gotIo = $true
+        Set-ProviderOk "diskio"
+    } catch {
+        $gotIo = $false
+    }
+    if (-not $gotIo) {
+        $perfFmt = Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -ErrorAction Stop
+        foreach ($r in $perfFmt) {
+            $pidKey = [string]$r.IDProcess
+            if ($pidKey -eq "0" -or $pidKey -eq "_Total") { continue }
+            $readBytes = [int64]0
+            $writeBytes = [int64]0
+            try { $readBytes = [int64]$r.IOReadBytesPerSec } catch {}
+            try { $writeBytes = [int64]$r.IOWriteBytesPerSec } catch {}
+            if ($readBytes -lt 0) { $readBytes = 0 }
+            if ($writeBytes -lt 0) { $writeBytes = 0 }
+            $ioMap[$pidKey] = @{ Read = $readBytes; Write = $writeBytes }
+        }
+        Set-ProviderOk "diskio"
+    }
+} catch {
+    Add-Error "diskio" $_.Exception.Message
+}
+if (-not $providers.ContainsKey("diskio")) {
+    Set-ProviderOk "diskio"
+}
+
+# 4c. Network — TcpConnections capped 200 + UdpListeners capped 50
+$networkData = @{
+    TcpConnections = @()
+    UdpListeners = @()
+}
+$tcpCountByPid = @{}
+try {
+    $conns = @()
+    $rawConns = Get-NetTCPConnection -ErrorAction Stop | Select-Object -First 200
+    foreach ($c in $rawConns) {
+        $entry = @{
+            LocalAddress = [string]$c.LocalAddress
+            LocalPort = [int]$c.LocalPort
+            RemoteAddress = [string]$c.RemoteAddress
+            RemotePort = [int]$c.RemotePort
+            State = [string]$c.State
+            PID = [int]$c.OwningProcess
+        }
+        $conns += $entry
+        $k = [string]$entry.PID
+        if ($tcpCountByPid.ContainsKey($k)) { $tcpCountByPid[$k] = $tcpCountByPid[$k] + 1 } else { $tcpCountByPid[$k] = 1 }
+    }
+    $networkData.TcpConnections = $conns
+    # UdpListeners best-effort
+    try {
+        $udpRaw = Get-NetUDPEndpoint -ErrorAction Stop | Select-Object -First 50
+        $udpList = @()
+        foreach ($u in $udpRaw) {
+            $pidVal = 0
+            try { if ($null -ne $u.OwningProcess) { $pidVal = [int]$u.OwningProcess } } catch {}
+            $udpList += @{
+                LocalAddress = [string]$u.LocalAddress
+                LocalPort = [int]$u.LocalPort
+                PID = [int]$pidVal
+            }
+        }
+        $networkData.UdpListeners = $udpList
+    } catch {
+        $networkData.UdpListeners = @()
+    }
+    Set-ProviderOk "network"
+} catch {
+    Add-Error "network" $_.Exception.Message
+    $networkData.TcpConnections = @()
+    $networkData.UdpListeners = @()
+}
+
+# 4d. Volumes — Win32_LogicalDisk + Win32_Volume + SMART
+$volumesData = @()
+try {
+    $smartMap = @{}
+    $anyPredictFail = $false
+    try {
+        $smartInstances = Get-CimInstance -Namespace root/wmi -ClassName MSStorageDriver_FailurePredictStatus -ErrorAction Stop
+        foreach ($s in $smartInstances) {
+            $pred = $false
+            try { $pred = [bool]$s.PredictFailure } catch {}
+            if ($pred) { $anyPredictFail = $true }
+            $key = ""
+            try { $key = [string]$s.InstanceName } catch {}
+            if ($key) { $smartMap[$key] = $pred }
+        }
+    } catch {
+        # SMART optional
+    }
+
+    $logicalDisks = Get-CimInstance Win32_LogicalDisk -ErrorAction Stop
+    foreach ($d in $logicalDisks) {
+        $deviceId = ""
+        try { $deviceId = [string]$d.DeviceID } catch {}
+        if (-not $deviceId) { continue }
+        $size = [int64]0
+        $free = [int64]0
+        try { if ($null -ne $d.Size) { $size = [int64]$d.Size } } catch {}
+        try { if ($null -ne $d.FreeSpace) { $free = [int64]$d.FreeSpace } } catch {}
+        if ($size -lt 0) { $size = 0 }
+        if ($free -lt 0) { $free = 0 }
+        if ($free -gt $size -and $size -gt 0) { $free = $size }
+        $label = ""
+        try { if ($null -ne $d.VolumeName) { $label = [string]$d.VolumeName } } catch {}
+        $fs = ""
+        try { if ($null -ne $d.FileSystem) { $fs = [string]$d.FileSystem } } catch {}
+        $driveType = 0
+        try { $driveType = [int]$d.DriveType } catch {}
+        $health = "OK"
+        if ($anyPredictFail) { $health = "PredFail" }
+        $volumesData += @{
+            DeviceID = $deviceId
+            Label = $label
+            FileSystem = $fs
+            SizeBytes = $size
+            FreeBytes = $free
+            HealthStatus = $health
+            DriveType = $driveType
+        }
+    }
+    # Supplement with Win32_Volume for volumes not already covered
+    try {
+        $existingIds = @()
+        foreach ($v in $volumesData) { $existingIds += $v.DeviceID }
+        $extraVols = Get-CimInstance Win32_Volume -ErrorAction Stop | Where-Object { $_.DriveLetter -and $existingIds -notcontains $_.DriveLetter }
+        foreach ($v in $extraVols) {
+            $size = [int64]0
+            $free = [int64]0
+            try { if ($null -ne $v.Capacity) { $size = [int64]$v.Capacity } } catch {}
+            try { if ($null -ne $v.FreeSpace) { $free = [int64]$v.FreeSpace } } catch {}
+            if ($size -lt 0) { $size = 0 }
+            if ($free -lt 0) { $free = 0 }
+            if ($free -gt $size -and $size -gt 0) { $free = $size }
+            $did = ""
+            try { $did = if ($v.DriveLetter) { [string]$v.DriveLetter } else { [string]$v.DeviceID } } catch {}
+            $label2 = ""
+            try { if ($null -ne $v.Label) { $label2 = [string]$v.Label } } catch {}
+            $fs2 = ""
+            try { if ($null -ne $v.FileSystem) { $fs2 = [string]$v.FileSystem } } catch {}
+            $volumesData += @{
+                DeviceID = $did
+                Label = $label2
+                FileSystem = $fs2
+                SizeBytes = $size
+                FreeBytes = $free
+                HealthStatus = "OK"
+                DriveType = 3
+            }
+        }
+    } catch {
+        # supplemental optional
+    }
+    Set-ProviderOk "volumes"
+} catch {
+    Add-Error "volumes" $_.Exception.Message
+    $volumesData = @()
+}
+
+# 4e. Startup — Win32_StartupCommand capped 100
+$startupData = @()
+try {
+    $rawStartup = Get-CimInstance Win32_StartupCommand -ErrorAction Stop | Select-Object -First 100
+    foreach ($s in $rawStartup) {
+        $nameVal = ""
+        $cmdVal = ""
+        $locVal = ""
+        $userVal = ""
+        try { if ($null -ne $s.Name) { $nameVal = [string]$s.Name } } catch {}
+        try { if ($null -ne $s.Command) { $cmdVal = [string]$s.Command } } catch {}
+        try { if ($null -ne $s.Location) { $locVal = [string]$s.Location } } catch {}
+        try { if ($null -ne $s.User) { $userVal = [string]$s.User } } catch {}
+        $startupData += @{
+            Name = $nameVal
+            Command = $cmdVal
+            Location = $locVal
+            User = $userVal
+        }
+    }
+    Set-ProviderOk "startup"
+} catch {
+    Add-Error "startup" $_.Exception.Message
+    $startupData = @()
+}
+
+# Enrich AllProcesses with IO and TcpConnectionCount
+for ($i = 0; $i -lt $allProcesses.Count; $i++) {
+    $pidKey = [string]$allProcesses[$i].PID
+    if ($ioMap.ContainsKey($pidKey)) {
+        $allProcesses[$i].IOReadBytes = [int64]$ioMap[$pidKey].Read
+        $allProcesses[$i].IOWriteBytes = [int64]$ioMap[$pidKey].Write
+    } else {
+        $allProcesses[$i].IOReadBytes = [int64]0
+        $allProcesses[$i].IOWriteBytes = [int64]0
+    }
+    if ($tcpCountByPid.ContainsKey($pidKey)) {
+        $allProcesses[$i].TcpConnectionCount = [int]$tcpCountByPid[$pidKey]
+    } else {
+        $allProcesses[$i].TcpConnectionCount = [int]0
+    }
+    if ($allProcesses[$i].IOReadBytes -lt 0) { $allProcesses[$i].IOReadBytes = 0 }
+    if ($allProcesses[$i].IOWriteBytes -lt 0) { $allProcesses[$i].IOWriteBytes = 0 }
+    if ($allProcesses[$i].TcpConnectionCount -lt 0) { $allProcesses[$i].TcpConnectionCount = 0 }
+}
 
 # 5. Query WSL status and distros
 $wslDistros = @()
@@ -291,6 +518,9 @@ $data = @{
         elapsedSeconds = [Math]::Round($elapsed, 3)
         processCount = $allProcesses.Count
     }
+    Network = $networkData
+    Volumes = $volumesData
+    Startup = $startupData
 }
 
 $envelope = @{
@@ -308,6 +538,9 @@ $legacy = @{
     AllProcesses = $data.AllProcesses
     WebViewProcesses = $data.WebViewProcesses
     WSL = $data.WSL
+    Network = $data.Network
+    Volumes = $data.Volumes
+    Startup = $data.Startup
 }
 $out = $envelope.Clone()
 foreach ($k in $legacy.Keys) { $out[$k] = $legacy[$k] }
