@@ -118,6 +118,43 @@ Alternatively, you can start the executable directly from your PowerShell termin
 
 ---
 
+## 🖥️ Headless / Fleet
+
+Run without the HTTP server or browser — ideal for RMM, Intune, or scheduled collection. Writes the same `envelope` JSON (capturedAt, schemaVersion 3, providers, data) to stdout or a file, with 12s timeout and validation. Redaction is on by default.
+
+```powershell
+# Write to stdout (redacted by default), pretty-printed
+.\SysView.exe --headless --pretty
+
+# Write to file (default redacted)
+.\SysView.exe --headless --output snapshot.json
+
+# Alias for --headless (same behaviour)
+.\SysView.exe --once --output snapshot.json
+
+# Pretty + file
+.\SysView.exe --headless --pretty --output snapshot.json
+
+# Include secrets (disable redaction) — CommandLine/Command kept verbatim
+.\SysView.exe --headless --redact=false --output snapshot.json
+
+# --headless is the same as --once; --once is kept as an alias for fleet scripts
+```
+
+Flags:
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--headless` | bool | `false` | Run once, write JSON, exit (no server/browser) |
+| `--once` | bool | `false` | Alias for `--headless` |
+| `--output` | string | `""` (stdout) | Output file for headless mode |
+| `--pretty` | bool | `false` | Pretty-print JSON (`MarshalIndent`) |
+| `--redact` | bool | `true` | Redact `AllProcesses[].CommandLine`, `WebViewProcesses[].CommandLine`, `Startup[].Command` → `"[redacted]"` |
+
+Exit codes: `0` on success, `1` on collection/validation/write failure (JSON error to stderr). No HTTP server or browser is started in headless mode.
+
+---
+
 ## 💡 Troubleshooting WSL2 Memory Starvation
 
 If your computer is consistently running out of RAM and `vmmemWSL` is consuming upwards of 15GB+:

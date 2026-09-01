@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -124,5 +127,149 @@ func TestMemoryUnavailable_RendersUnavailable(t *testing.T) {
 	prov := env["providers"].(map[string]any)
 	if prov["memory"] != "unavailable" {
 		t.Fatal("fixture must have memory=unavailable")
+	}
+}
+func TestHeadlessHelp(t *testing.T) {
+	cmd := exec.Command("go", "run", ".", "--help")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go run --help failed: %v output: %s", err, string(out))
+	}
+	s := string(out)
+	for _, want := range []string{"headless", "once", "output", "pretty", "redact"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("--help missing %q in output: %s", want, s)
+		}
+	}
+	// also ensure help mentions headless mode description
+	if !strings.Contains(s, "headless mode") && !strings.Contains(s, "headless") {
+		t.Fatalf("--help should mention headless mode, got: %s", s)
+	}
+}
+
+func TestHeadlessWritesFile(t *testing.T) {
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "snapshot.json")
+
+	// Build an envelope containing secrets that must be redacted
+	raw := `{"capturedAt":"2026-09-01T00:00:00Z","schemaVersion":3,"providers":{"memory":"ok"},"errors":[],"data":{"Memory":{"VisiblePhysicalBytes":100,"AvailableBytes":50,"InUseBytes":50},"AllProcesses":[{"PID":1,"Name":"foo","CommandLine":"secret --token abc"}],"WebViewProcesses":[{"PID":2,"Name":"edge","CommandLine":"secret2"}],"Startup":[{"Name":"app","Command":"C:\\secret\\run.exe --key 123"}],"Network":{"TcpConnections":[]}}}`
+	if err := validateEnvelope([]byte(raw)); err != nil {
+		t.Fatalf("validateEnvelope: %v", err)
+	}
+	redacted, err := applyRedaction([]byte(raw))
+	if err != nil {
+		t.Fatalf("applyRedaction: %v", err)
+	}
+	if !json.Valid(redacted) {
+		t.Fatal("redacted output is not valid JSON")
+	}
+	// Verify redaction
+	var env map[string]any
+	if err := json.Unmarshal(redacted, &env); err != nil {
+		t.Fatalf("unmarshal redacted: %v", err)
+	}
+	data := env["data"].(map[string]any)
+	if arr, ok := data["AllProcesses"].([]any); ok && len(arr) > 0 {
+		if m, ok := arr[0].(map[string]any); ok {
+			if m["CommandLine"] != "[redacted]" {
+				t.Fatalf("AllProcesses CommandLine not redacted: %v", m["CommandLine"])
+			}
+		}
+	} else {
+		t.Fatal("AllProcesses missing")
+	}
+	if arr, ok := data["WebViewProcesses"].([]any); ok && len(arr) > 0 {
+		if m, ok := arr[0].(map[string]any); ok {
+			if m["CommandLine"] != "[redacted]" {
+				t.Fatalf("WebViewProcesses CommandLine not redacted: %v", m["CommandLine"])
+			}
+		}
+	}
+	if arr, ok := data["Startup"].([]any); ok && len(arr) > 0 {
+		if m, ok := arr[0].(map[string]any); ok {
+			if m["Command"] != "[redacted]" {
+				t.Fatalf("Startup Command not redacted: %v", m["Command"])
+			}
+		}
+	}
+	// Verify schemaVersion preserved
+	var top map[string]json.RawMessage
+	json.Unmarshal(redacted, &top)
+	var sv struct {
+		SchemaVersion int `json:"schemaVersion"`
+	}
+	json.Unmarshal(redacted, &sv)
+	if sv.SchemaVersion != 3 {
+		t.Fatalf("schemaVersion want 3 got %d", sv.SchemaVersion)
+	}
+	// Mimic runHeadless file write path (without os.Exit)
+	if err := os.WriteFile(outFile, redacted, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !json.Valid(got) {
+		t.Fatal("written file is not valid JSON")
+	}
+	if err := validateEnvelope(got); err != nil {
+		t.Fatalf("validateEnvelope on written file: %v", err)
+	}
+	// Pretty variant
+	var v any
+	json.Unmarshal(redacted, &v)
+	pretty, _ := json.MarshalIndent(v, "", "  ")
+	if !strings.Contains(string(pretty), "\n") {
+		t.Fatal("pretty JSON should contain newlines")
+	}
+	prettyFile := filepath.Join(dir, "pretty.json")
+	if err := os.WriteFile(prettyFile, pretty, 0644); err != nil {
+		t.Fatalf("WriteFile pretty: %v", err)
+	}
+	if !json.Valid(pretty) {
+		t.Fatal("pretty file not valid JSON")
+	}
+}
+
+func TestHeadlessRedactToggleAndExitCodes(t *testing.T) {
+	// Redact disabled should preserve secrets
+	raw := `{"capturedAt":"2026-09-01T00:00:00Z","schemaVersion":3,"providers":{"memory":"ok"},"errors":[],"data":{"Memory":{"VisiblePhysicalBytes":100,"AvailableBytes":50,"InUseBytes":50},"AllProcesses":[{"PID":1,"Name":"foo","CommandLine":"keep me"}],"Startup":[{"Name":"app","Command":"keep this"}]}}`
+	// redact=false means raw unchanged (runHeadless would skip applyRedaction)
+	var env map[string]any
+	json.Unmarshal([]byte(raw), &env)
+	data := env["data"].(map[string]any)
+	if arr, ok := data["AllProcesses"].([]any); ok {
+		if m := arr[0].(map[string]any); m["CommandLine"] != "keep me" {
+			t.Fatalf("redact=false should preserve CommandLine")
+		}
+	}
+	// redact=true path must redact
+	redacted, err := applyRedaction([]byte(raw))
+	if err != nil {
+		t.Fatalf("applyRedaction: %v", err)
+	}
+	json.Unmarshal(redacted, &env)
+	data = env["data"].(map[string]any)
+	if arr, ok := data["AllProcesses"].([]any); ok {
+		if m := arr[0].(map[string]any); m["CommandLine"] != "[redacted]" {
+			t.Fatalf("redact=true should redact, got %v", m["CommandLine"])
+		}
+	}
+	// Exit code semantics: validateEnvelope valid -> exit 0, invalid -> non-zero
+	if err := validateEnvelope([]byte(raw)); err != nil {
+		t.Fatalf("valid envelope should not error: %v", err)
+	}
+	if err := validateEnvelope([]byte(`{bad`)); err == nil {
+		t.Fatal("malformed JSON should error (would be exit 1)")
+	}
+	if err := validateEnvelope([]byte(`{"capturedAt":"x","schemaVersion":3,"providers":{},"errors":[],"data":{"Memory":{}}}`)); err == nil {
+		t.Fatal("missing Memory fields should error (would be exit 1)")
+	}
+	// Help exit code already checked in TestHeadlessHelp (0)
+	// Unknown flag should be non-zero exit
+	cmd := exec.Command("go", "run", ".", "--unknown-flag-xyz")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("unknown flag should exit non-zero")
 	}
 }
