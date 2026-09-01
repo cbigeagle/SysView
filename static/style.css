@@ -518,7 +518,14 @@ tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transpa
 .evidence-maymean { color: var(--text-2); }
 .evidence-next { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .pool-trend { font-variant-numeric: tabular-nums; }
-
+/* H5bT2: Reclaim standby button + result banner */
+#reclaim-standby-btn { margin-top: 0.6rem; }
+#reclaim-standby-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.reclaim-result { margin-top: 0.5rem; font-size: 0.82rem; line-height: 1.5; min-height: 1.2rem; }
+.reclaim-result:empty { display: none; }
+.reclaim-result.success { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--good); color: var(--text-1); }
+.reclaim-result.warning { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--warn); color: var(--text-1); }
+.reclaim-result.danger { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--danger); color: var(--text-1); }
 /* WSL */
 .wsl-content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .wsl-status-card, .wsl-advice-card {
