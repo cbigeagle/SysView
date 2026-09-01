@@ -22,6 +22,21 @@ class HistoryStore {
 const historyStore = new HistoryStore(450);
 if (typeof window !== 'undefined') { window.__historyStore = historyStore; window.HistoryStore = HistoryStore; window.historyStore = historyStore; }
 
+// H1T4: pure comparator — stable sort mimic, string for name, numeric for others
+function sortProcesses(list, key, dir){
+  const get={name:p=>p.Name.toLowerCase(), pid:p=>p.PID, private:p=>p.PrivateMemory, ws:p=>p.WorkingSet, cpu:p=>p.CPU}[key];
+  if(!get) return [...list];
+  return [...list].sort((a,b)=>{
+    const av=get(a), bv=get(b);
+    if(typeof av==='string' && typeof bv==='string'){
+      const cmp=av.localeCompare(bv);
+      return dir==='asc' ? cmp : -cmp;
+    }
+    return dir==='asc' ? av - bv : bv - av;
+  });
+}
+if(typeof window!=='undefined'){ window.sortProcesses=sortProcesses; }
+
 // H1T2 test hook: pure helper for memory unavailable detection (providers.memory === 'unavailable' or zero bytes)
 function isMemUnavailable(providers, mem) {
 	return (providers && providers.memory === 'unavailable') || !mem || (mem.VisiblePhysicalBytes === 0 && mem.TotalPhysicalBytes === 0);
@@ -91,6 +106,55 @@ document.addEventListener('DOMContentLoaded', () => {
     const historyBadge = document.getElementById('history-badge');
     const historyIntervalSelect = document.getElementById('history-interval');
     const historyPauseBtn = document.getElementById('history-pause');
+
+    // H1T4: Tabs — role=tablist wiring + persistence
+    const tabBtns = [...document.querySelectorAll('[role="tab"]')];
+    const tabPanels = [...document.querySelectorAll('[data-panel]')];
+    let _activeTab = null;
+    function activateTab(name){
+      const valid = ['overview','processes','webview','wsl'];
+      if(!valid.includes(name)) name='overview';
+      _activeTab = name;
+      tabBtns.forEach(b=>{ const on=b.dataset.tab===name; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; });
+      tabPanels.forEach(p=>{ p.hidden = p.dataset.panel !== name; });
+      window.__activeTab = name;
+      try{ localStorage.setItem('sysview-tab', name); }catch{}
+      try{ history.replaceState(null,'','#'+name); }catch{}
+    }
+    if(typeof window!=='undefined'){ window.activateTab = activateTab; }
+    tabBtns.forEach(b=> b.addEventListener('click', ()=> activateTab(b.dataset.tab)));
+    // keyboard on tablist: ArrowLeft/Right cycles, Home/End
+    const tabBar = document.querySelector('.tab-bar');
+    if(tabBar){
+      tabBar.addEventListener('keydown', (e)=>{
+        const idx = tabBtns.indexOf(document.activeElement);
+        if(e.key==='ArrowRight'){ e.preventDefault(); const n=(idx+1)%tabBtns.length; tabBtns[n].focus(); activateTab(tabBtns[n].dataset.tab); }
+        else if(e.key==='ArrowLeft'){ e.preventDefault(); const n=(idx-1+tabBtns.length)%tabBtns.length; tabBtns[n].focus(); activateTab(tabBtns[n].dataset.tab); }
+        else if(e.key==='Home'){ e.preventDefault(); tabBtns[0].focus(); activateTab(tabBtns[0].dataset.tab); }
+        else if(e.key==='End'){ e.preventDefault(); tabBtns[tabBtns.length-1].focus(); activateTab(tabBtns[tabBtns.length-1].dataset.tab); }
+      });
+    }
+    // restore tab from hash or localStorage
+    (function initTab(){
+      let saved=null; try{ saved = localStorage.getItem('sysview-tab'); }catch{}
+      const hash = (location.hash||'').replace('#','').toLowerCase();
+      const valid=['overview','processes','webview','wsl'];
+      let initial='overview';
+      if(valid.includes(hash)) initial=hash;
+      else if(valid.includes(saved)) initial=saved;
+      activateTab(initial);
+      window.addEventListener('hashchange', ()=>{ const h=(location.hash||'').replace('#','').toLowerCase(); if(valid.includes(h)) activateTab(h); });
+    })();
+    // global keyboard: R refresh, / focus filter
+    document.addEventListener('keydown', (e)=>{
+      const tag=(e.target.tagName||'').toLowerCase();
+      const isInput = tag==='input' || tag==='textarea' || tag==='select' || e.target.isContentEditable;
+      if(!isInput && (e.key==='r' || e.key==='R')){ e.preventDefault(); grabSnapshot(); }
+      if(!isInput && e.key==='/'){ e.preventDefault(); const inp=document.getElementById('wv-search'); if(inp){ inp.focus(); try{ activateTab('webview'); }catch{} } }
+    });
+    // H1T4: sortable hog table state
+    let hogSortKey='private', hogSortDir='desc';
+    let _lastAllProcesses=null;
 
     let currentData = null;
     // H1T3: AutoRefresh controller
@@ -911,11 +975,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderMemoryHogs(allProcesses) {
-        // Exclude WebView2 processes and sort by Private memory usage
+        _lastAllProcesses = allProcesses;
+        // Exclude WebView2 processes and sort via current sort key/dir
         const nonWv = allProcesses.filter(p => p.Name.toLowerCase() !== 'msedgewebview2');
-        nonWv.sort((a, b) => b.PrivateMemory - a.PrivateMemory);
-        
-        const topHogs = nonWv.slice(0, 15);
+        const sorted = sortProcesses(nonWv, hogSortKey, hogSortDir);
+        const topHogs = sorted.slice(0, 15);
         memoryHogsTable.innerHTML = '';
         
         topHogs.forEach(p => {
@@ -1321,7 +1385,27 @@ document.addEventListener('DOMContentLoaded', () => {
             displayFilteredWebViewGroups();
         }, 150);
     });
-
+    // H1T4: sortable hog headers — data-sort, aria-sort, re-render
+    const hogTable = document.querySelector('table thead');
+    function updateHogSortUI(){
+      document.querySelectorAll('th[data-sort]').forEach(th=>{
+        const k=th.dataset.sort;
+        if(k===hogSortKey) th.setAttribute('aria-sort', hogSortDir==='asc' ? 'ascending' : 'descending');
+        else th.setAttribute('aria-sort','none');
+      });
+    }
+    document.querySelectorAll('th[data-sort]').forEach(th=>{
+      const handler = ()=>{
+        const key=th.dataset.sort;
+        if(hogSortKey===key){ hogSortDir = hogSortDir==='asc' ? 'desc' : 'asc'; }
+        else { hogSortKey=key; hogSortDir = (key==='name' ? 'asc' : 'desc'); }
+        updateHogSortUI();
+        if(_lastAllProcesses) renderMemoryHogs(_lastAllProcesses);
+      };
+      th.addEventListener('click', handler);
+      th.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); handler(); }});
+    });
+    updateHogSortUI();
     // H1T3: history controls — interval + pause + auto-refresh wiring
     if(historyIntervalSelect){
         historyIntervalSelect.addEventListener('change', () => {
