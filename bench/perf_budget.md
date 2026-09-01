@@ -1,4 +1,4 @@
-# Perf & Capability Budgets (H2/H3/H4/H5a/H5b/H5c gates)
+# Perf & Capability Budgets (H2/H3/H4/H5a/H5b/H5c/H5d gates)
 
 Baseline: H1 (commit 03fadd2 base, post-H1T7). H2 proposals MUST publish delta vs `Current (H1)`.
 
@@ -13,11 +13,11 @@ Baseline: H1 (commit 03fadd2 base, post-H1T7). H2 proposals MUST publish delta v
 
 ## Notes
 
-- **Snapshot latency p50**: loopback `GET /api/snapshot` with no extra providers, concurrency cap 2, 12s timeout. Measure with `Measure-Command { Invoke-RestMethod http://localhost:22880/api/snapshot }` p50 over 20 runs. H1 collector is `snapshot.ps1` (memory + processes + WSL stub). H2 adding disk/net/volumes/startup may add ~50–100ms each; budget relaxes to 900ms. H3 adds runtimegroups/sensors/docker (sensors ~50ms WMI, docker ~100ms when present) — p50 still budgeted <900 ms; validation micro-bench ~30 µs/op is not p50. H4 headless reuses same collector with 12s timeout; no HTTP server overhead. H5a adds no new providers (JS-only deltas: formatDelta/confidence/evidenceCard) — p50 flat, validation bench flat 26 allocs. H5b adds `POST /api/reclaim/standby` one-off POST, not on snapshot hot path — p50 flat <900 ms. H5c adds `POST /api/wsl/config` one-off POST, not on snapshot hot path — p50 unchanged (<900 ms), validation 26 flat.
-- **Snapshot JSON size**: raw response bytes. Fixture `testdata/envelope_ok.json` is ~3.37 KB (1 proc stub, H3 v3 / H4 v3 / H5a v3 unchanged); extrapolate or capture a real 599-proc snapshot. H1 target ~0.8MB live; H2 with 4 providers ~1.5MB ceiling relates to wire + `HistoryStore` clone cost. H3 fixture 3371 B (+614 B vs H2, +22%) — well within 1.5 MB ceiling even extrapolated to 599 procs (~1.2 MB est.); budget headroom intact. H4 fixture unchanged 3371 B (no new providers; headless writes same envelope). H5a fixture unchanged 3371 B (no new providers; JS-only H5a adds no JSON). H5b fixture unchanged 3371 B (schemaVersion 3, no new envelope fields; reclaim is one-off POST returning `beforeBytes/afterBytes/reclaimedBytes`, not on snapshot hot path). H5c fixture unchanged 3371 B (schemaVersion 3, no new envelope fields; cap is one-off POST returning `path/memory/message`, not on snapshot hot path — JSON 3.37KB flat).
-- **JSON validation allocs**: from `go test -bench=BenchmarkValidateEnvelope -benchmem .` — `allocs/op` and `B/op`. Validates envelope shape (`data.Memory.VisiblePhysicalBytes` etc.) via `validateEnvelope`. Budget <5 allocs/op keeps GC pressure flat on auto-refresh (2s interval). H2 delta: +21 allocs (+19.6%), +2792 B (+43%), +8.2 µs (+54%) reflects larger v2 fixture (extra structs validated). H3 delta: +20 allocs (+15.6%), +2576 B (+27.8%), +6.2–7.2 µs (+26–31%) reflects larger v3 fixture (RuntimeGroups/Sensors/Docker). Still exceeds <5 budget — flat 128 carry not met; regression noted, not blocking per Global Constraints (flat or improve is target, not hard gate). H4 recovery: struct-based `envelopeTop`/`dataMem`/`memFields` with `json.RawMessage` avoids `interface{}` — 26 allocs flat. H5a flat 26, H5b flat 26 (one-off POST), H5c flat 26 (one-off POST, not snapshot hot path — allocs still 26 flat).
-- **Go vet / node --check**: `go vet ./...` and `node --check static/app.js` both pass at H1, H2, H3, H4, H5a. Any change that breaks them blocks merge. H5b re-verified `go vet ./...` 0, `node --check static/app.js` 0, bench 26 allocs flat. H5c re-verified `go vet ./...` 0, `node --check static/app.js` 0, bench 26 allocs flat — **H5c Cap WSL: one-off POST, not on snapshot hot path — budgets flat**.
-- **HistoryStore 450 slots**: bounded ring buffer (15 min @ 2s interval = 450 envelopes). Each slot holds `{at, envelope}`; estimate `snapshot JSON bytes × 450 × ~1.2`. H1 ~0.8MB × 450 would be large if held raw — actual `HistoryStore` holds envelopes in-memory per-tab; budget is 2MB JS heap for the live window (measured via DevTools Memory). H2 with larger envelopes allows 5MB. H3 est. 1.82 MB (3.37 KB ×450 ×1.2) still well under 5 MB. H4 unchanged 1.82 MB (same fixture size). H5a unchanged 1.82 MB (same fixture size; JS delta helpers add no heap per slot). H5b unchanged 1.82 MB (same fixture size; reclaim POST does not add HistoryStore slots). H5c unchanged 1.82 MB (same fixture size; cap POST does not add HistoryStore slots — 1.82MB flat).
+- **Snapshot latency p50**: loopback `GET /api/snapshot` with no extra providers, concurrency cap 2, 12s timeout. Measure with `Measure-Command { Invoke-RestMethod http://localhost:22880/api/snapshot }` p50 over 20 runs. H1 collector is `snapshot.ps1` (memory + processes + WSL stub). H2 adding disk/net/volumes/startup may add ~50–100ms each; budget relaxes to 900ms. H3 adds runtimegroups/sensors/docker (sensors ~50ms WMI, docker ~100ms when present) — p50 still budgeted <900 ms; validation micro-bench ~30 µs/op is not p50. H4 headless reuses same collector with 12s timeout; no HTTP server overhead. H5a adds no new providers (JS-only deltas: formatDelta/confidence/evidenceCard) — p50 flat, validation bench flat 26 allocs. H5b adds `POST /api/reclaim/standby` one-off POST, not on snapshot hot path — p50 flat <900 ms. H5c adds `POST /api/wsl/config` one-off POST, not on snapshot hot path — p50 unchanged (<900 ms), validation 26 flat. H5d adds `POST /api/runtime/restart` one-off POST, not on snapshot hot path — p50 unchanged (<900 ms), validation 26 flat.
+- **Snapshot JSON size**: raw response bytes. Fixture `testdata/envelope_ok.json` is ~3.37 KB (1 proc stub, H3 v3 / H4 v3 / H5a v3 unchanged); extrapolate or capture a real 599-proc snapshot. H1 target ~0.8MB live; H2 with 4 providers ~1.5MB ceiling relates to wire + `HistoryStore` clone cost. H3 fixture 3371 B (+614 B vs H2, +22%) — well within 1.5 MB ceiling even extrapolated to 599 procs (~1.2 MB est.); budget headroom intact. H4 fixture unchanged 3371 B (no new providers; headless writes same envelope). H5a fixture unchanged 3371 B (no new providers; JS-only H5a adds no JSON). H5b fixture unchanged 3371 B (schemaVersion 3, no new envelope fields; reclaim is one-off POST returning `beforeBytes/afterBytes/reclaimedBytes`, not on snapshot hot path). H5c fixture unchanged 3371 B (schemaVersion 3, no new envelope fields; cap is one-off POST returning `path/memory/message`, not on snapshot hot path — JSON 3.37KB flat). H5d fixture unchanged 3371 B (schemaVersion 3, no new envelope fields; restart is one-off POST returning `host/pid/message`, not on snapshot hot path — JSON 3.37KB flat, HistoryStore 1.82MB flat).
+- **JSON validation allocs**: from `go test -bench=BenchmarkValidateEnvelope -benchmem .` — `allocs/op` and `B/op`. Validates envelope shape (`data.Memory.VisiblePhysicalBytes` etc.) via `validateEnvelope`. Budget <5 allocs/op keeps GC pressure flat on auto-refresh (2s interval). H2 delta: +21 allocs (+19.6%), +2792 B (+43%), +8.2 µs (+54%) reflects larger v2 fixture (extra structs validated). H3 delta: +20 allocs (+15.6%), +2576 B (+27.8%), +6.2–7.2 µs (+26–31%) reflects larger v3 fixture (RuntimeGroups/Sensors/Docker). Still exceeds <5 budget — flat 128 carry not met; regression noted, not blocking per Global Constraints (flat or improve is target, not hard gate). H4 recovery: struct-based `envelopeTop`/`dataMem`/`memFields` with `json.RawMessage` avoids `interface{}` — 26 allocs flat. H5a flat 26, H5b flat 26 (one-off POST), H5c flat 26 (one-off POST, not snapshot hot path — allocs still 26 flat). H5d flat 26 (one-off POST, not snapshot hot path — allocs still 26 flat, 3371 B / 1.82MB flat).
+- **Go vet / node --check**: `go vet ./...` and `node --check static/app.js` both pass at H1, H2, H3, H4, H5a. Any change that breaks them blocks merge. H5b re-verified `go vet ./...` 0, `node --check static/app.js` 0, bench 26 allocs flat. H5c re-verified `go vet ./...` 0, `node --check static/app.js` 0, bench 26 allocs flat — **H5c Cap WSL: one-off POST, not on snapshot hot path — budgets flat**. H5d re-verified `go vet ./...` 0, `node --check static/app.js` 0, bench 26 allocs flat — **H5d Restart Runtime host: one-off POST, not on snapshot hot path — budgets flat**.
+- **HistoryStore 450 slots**: bounded ring buffer (15 min @ 2s interval = 450 envelopes). Each slot holds `{at, envelope}`; estimate `snapshot JSON bytes × 450 × ~1.2`. H1 ~0.8MB × 450 would be large if held raw — actual `HistoryStore` holds envelopes in-memory per-tab; budget is 2MB JS heap for the live window (measured via DevTools Memory). H2 with larger envelopes allows 5MB. H3 est. 1.82 MB (3.37 KB ×450 ×1.2) still well under 5 MB. H4 unchanged 1.82 MB (same fixture size). H5a unchanged 1.82 MB (same fixture size; JS delta helpers add no heap per slot). H5b unchanged 1.82 MB (same fixture size; reclaim POST does not add HistoryStore slots). H5c unchanged 1.82 MB (same fixture size; cap POST does not add HistoryStore slots — 1.82MB flat). H5d unchanged 1.82 MB (same fixture size; restart POST does not add HistoryStore slots — 1.82MB flat).
 
 ## Current (H1) — measured 2026-09-01
 
@@ -285,3 +285,46 @@ ok  	sysview 1.508s  # H5b ref
 | Go tests | 18 Go tests | 24 Go tests (+6 cap: Token/Origin/Confirm/InvalidMemory/RateLimit/MethodNotAllowed) | +6 | **pass** (24 Go + 4 JS = 28 PASS) |
 | JS tests | 4 JS tests | 4 JS tests (unchanged) | 0 | **pass** |
 | H5c Cap WSL | — | one-off POST, not on snapshot hot path — budgets flat | — | **pass** |
+
+## Current (H5d) — measured 2026-09-01 (H5dT3 — Restart Runtime host one-off POST, flat vs H5c — budgets flat)
+
+_Provenance — `go test -bench=BenchmarkValidateEnvelope -benchmem -run=^$ .`, `go test ./... -v`, `go vet ./...`, `node --check static/app.js`, fixture size, html-validate, 4 JS tests._
+
+```
+goos: windows
+goarch: amd64
+pkg: sysview
+cpu: AMD Ryzen 7 9700X 8-Core Processor
+BenchmarkValidateEnvelope-16           50167         23049 ns/op        3296 B/op          26 allocs/op   # H5d run 1 (H5dT3 flat — same as H5c/H5b)
+BenchmarkValidateEnvelope-16           53986         22331 ns/op        3296 B/op          26 allocs/op   # H5c ref (flat)
+PASS
+ok      sysview 1.51s  # H5d run 1
+ok      sysview 1.555s  # H5c ref
+```
+
+| Metric | Value | Source |
+|--------|-------|--------|
+| `BenchmarkValidateEnvelope` | 23049 ns/op, 3296 B/op, 26 allocs/op (H5d run 1); 22331 ns/op same B/allocs (H5c ref) — flat | `go test -bench=BenchmarkValidateEnvelope -benchmem -run=^$ .` (windows/amd64, Ryzen 7 9700X, Go 1.26.5) |
+| Snapshot JSON (fixture) | 3371 B (1 proc, v3, unchanged from H3/H4/H5a/H5b/H5c) | `(Get-Item testdata/envelope_ok.json).Length` → 3371; `3.29 KB` — H5d flat (no new envelope fields; restart is one-off POST, not snapshot poll) |
+| `go vet ./...` | pass | `go vet ./...` exit 0, 2026-09-01 (H5dT3) |
+| `node --check static/app.js` | pass | `node --check static/app.js` exit 0, 2026-09-01 (H5dT3 — restart button + result banner, textContent) |
+| `node --check` JS | pass | `node --check static/app.js` 0, `node --check static/evidence_test.js` 0, `node --check static/export_test.js` 0, `node --check static/history_store_test.js` 0, `node --check static/tabs_test.js` 0 |
+| `go test ./...` | PASS (30 tests) | `go test ./... -v` — 30 PASS, 0 FAIL (3 validate, 2 snapshot, 3 wsl, 5 reclaim, 6 cap wsl, 6 restart, 2 memory, 3 headless) — **H5d Restart Runtime host: one-off POST, not on snapshot hot path — budgets flat** |
+| `node static/*_test.js` (4) | PASS | `node static/export_test.js` → `export_test PASS`; `node static/history_store_test.js` → `all assertions passed`; `node static/tabs_test.js` → `all assertions passed`; `node static/evidence_test.js` → `evidence_test PASS` |
+| `buildExportPayload` redaction (H5d check) | pass — unchanged | H5d restart POST does not touch export/headless redaction; shape preserved verbatim |
+| html-validate | pass | `node -e` counts: `<section>` 15 vs `</section>` 15 match, `<div>` 71 vs `</div>` 71 match, `**` 0, `&bull;` 0, footer `v0.2.0` present (restart adds per-card result + global result — balanced) |
+| Restart contract | pass | `POST /api/runtime/restart` — token+origin+confirm, host+pid required, pid>4, 429 cap 1, 10s timeout, Get-Process validation, Stop-Process host-only — 6 new tests: RequiresToken/Origin/Confirm/MethodNotAllowed/RateLimit/InvalidPid |
+
+| Metric | H5c baseline | H5d proposal | Delta | Budget? |
+|--------|-------------|-------------|-------|---------|
+| `BenchmarkValidateEnvelope` allocs | 26 allocs/op | 26 allocs/op | 0 (flat) | **pass** (target <50 met; H5d flat — restart one-off POST, not on snapshot hot path) |
+| `BenchmarkValidateEnvelope` B/op | 3296 B/op | 3296 B/op | 0 (flat) | **pass** |
+| `BenchmarkValidateEnvelope` ns/op | ~22331 ns/op | ~23049 ns/op | +718 ns (+3.2% noise) | **pass** |
+| Snapshot JSON fixture | 3371 B | 3371 B | 0 | **pass** (<1.5 MB ceiling; est. live ~1.2 MB <1.5 MB) |
+| HistoryStore 450 slots (est.) | ~1.52 MB ×1.2 ≈1.82 MB | ~1.52 MB ×1.2 ≈1.82 MB | 0 | **pass** (<5 MB; headroom 3.18 MB) |
+| Go vet / node --check | pass | pass | 0 | **pass** |
+| Export/headless redacted parity | Startup.Command redacted | unchanged (restart does not alter JSON) | 0 | **pass** |
+| html-validate (sections/divs/bullets/footer) | 15/15 sections, 70/70 divs, `**`0 `&bull;`0 | 15/15 sections, 71/71 divs, `**`0 `&bull;`0 (restart adds per-card/global result — balanced) | +1 div balanced | **pass** |
+| Go tests | 24 Go tests | 30 Go tests (+6 restart: Token/Origin/Confirm/MethodNotAllowed/RateLimit/InvalidPid) | +6 | **pass** (30 Go + 4 JS = 34 PASS) |
+| JS tests | 4 JS tests | 4 JS tests (unchanged) | 0 | **pass** |
+| H5d Restart Runtime host | — | one-off POST, not on snapshot hot path — budgets flat | — | **pass** |
