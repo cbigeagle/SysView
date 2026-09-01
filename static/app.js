@@ -30,7 +30,7 @@ function buildExportPayload(envelope, {redact=true}={}){
     clone.data.WebViewProcesses.forEach(p=>{ if(p.CommandLine) p.CommandLine="[redacted]"; });
   }
   if(redact && clone.data && clone.data.AllProcesses){
-    clone.data.AllProcesses.forEach(p=>{ if(p.Path) { /* keep path but strip user — intentionally preserved */ } });
+    clone.data.AllProcesses.forEach(p=>{ if(p.CommandLine) p.CommandLine="[redacted]"; });
   }
   return clone;
 }
