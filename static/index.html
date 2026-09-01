@@ -60,6 +60,8 @@
             <button role="tab" aria-selected="false" data-tab="processes" id="tab-btn-processes" aria-controls="tab-processes" tabindex="-1">Processes</button>
             <button role="tab" aria-selected="false" data-tab="webview" id="tab-btn-webview" aria-controls="tab-webview" tabindex="-1">WebView2</button>
             <button role="tab" aria-selected="false" data-tab="wsl" id="tab-btn-wsl" aria-controls="tab-wsl" tabindex="-1">WSL</button>
+            <button role="tab" aria-selected="false" data-tab="storage" id="tab-btn-storage" aria-controls="tab-storage" tabindex="-1">Storage</button>
+            <button role="tab" aria-selected="false" data-tab="startup" id="tab-btn-startup" aria-controls="tab-startup" tabindex="-1">Startup</button>
         </nav>
 
         <!-- PANEL: Overview — quick-stats + memory + advice -->
@@ -209,11 +211,14 @@
                                 <th scope="col" class="text-right" data-sort="private" aria-sort="descending" tabindex="0">Private Commit</th>
                                 <th scope="col" class="text-right" data-sort="ws" aria-sort="none" tabindex="0">Working Set</th>
                                 <th scope="col" class="text-right" data-sort="cpu" aria-sort="none" tabindex="0">CPU</th>
+                                <th scope="col" class="text-right" data-sort="ioRead" aria-sort="none" tabindex="0">I/O Read</th>
+                                <th scope="col" class="text-right" data-sort="ioWrite" aria-sort="none" tabindex="0">I/O Write</th>
+                                <th scope="col" class="text-right" data-sort="net" aria-sort="none" tabindex="0">Conns</th>
                             </tr>
                         </thead>
                         <tbody id="memory-hogs-table">
                             <tr>
-                                <td colspan="5" class="text-center">Waiting for data snapshot...</td>
+                                <td colspan="8" class="text-center">Waiting for data snapshot...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -290,6 +295,45 @@
 memory=4GB</pre>
                         <p class="wsl-note">On current Windows builds, WSL Settings also exposes memory options. Prefer Settings when available. See <a href="https://learn.microsoft.com/en-us/windows/wsl/wsl-config" target="_blank" rel="noopener">wsl-config docs</a>.</p>
                     </div>
+                </div>
+            </section>
+        </section>
+
+        <!-- PANEL: Storage — volumes -->
+        <section id="tab-storage" data-panel="storage" role="tabpanel" aria-labelledby="tab-btn-storage" hidden>
+            <section class="dashboard-block storage-section">
+                <h2>Storage Volumes</h2>
+                <p class="section-desc">Logical disks and volumes with usage and health. Low-space warnings appear below 10 percent free.</p>
+                <div id="volumes-container"></div>
+            </section>
+        </section>
+
+        <!-- PANEL: Startup — autostart entries -->
+        <section id="tab-startup" data-panel="startup" role="tabpanel" aria-labelledby="tab-btn-startup" hidden>
+            <section class="dashboard-block startup-section">
+                <div class="section-header">
+                    <div>
+                        <h2>Startup Programs</h2>
+                        <p class="section-desc">Autostart entries from registry, startup folder, and services. Filter by name or location.</p>
+                    </div>
+                    <div class="filter-controls">
+                        <input type="text" id="startup-filter" placeholder="Filter startup entries...">
+                    </div>
+                </div>
+                <div class="table-container" id="startup-table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th scope="col" data-sort="startupName" aria-sort="none" tabindex="0">Name</th>
+                                <th scope="col" data-sort="startupLocation" aria-sort="none" tabindex="0">Location</th>
+                                <th scope="col">Command</th>
+                                <th scope="col">User</th>
+                            </tr>
+                        </thead>
+                        <tbody id="startup-table">
+                            <tr><td colspan="4" class="text-center">Waiting for data snapshot...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </section>
         </section>
