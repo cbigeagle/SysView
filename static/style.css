@@ -247,6 +247,15 @@ header {
 .sparkline-wrap { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.5rem; }
 .sparkline { display: block; color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface-1)); border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
 .sparkline-delta { font-size: 0.72rem; color: var(--text-2); font-variant-numeric: tabular-nums; }
+/* H5aT1: trend + confidence tokens — reuse --good/--warn/--danger */
+.trend-up { color: var(--danger); }
+.trend-down { color: var(--good); }
+.trend-flat { color: var(--text-2); }
+.confidence-low { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface-1)); border: 1px solid color-mix(in srgb, var(--danger) 18%, transparent); border-radius: 999px; padding: 0.1rem 0.4rem; font-size: 0.72rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.confidence-med { color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface-1)); border: 1px solid color-mix(in srgb, var(--warn) 18%, transparent); border-radius: 999px; padding: 0.1rem 0.4rem; font-size: 0.72rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.confidence-high { color: var(--good); background: color-mix(in srgb, var(--good) 10%, var(--surface-1)); border: 1px solid color-mix(in srgb, var(--good) 18%, transparent); border-radius: 999px; padding: 0.1rem 0.4rem; font-size: 0.72rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+#pressure-delta, #pressure-confidence { font-variant-numeric: tabular-nums; }
+#pressure-delta:empty, #pressure-confidence:empty { display: none; }
 /* H1T4: tab bar + sortable headers + focus rings */
 .tab-bar { display: flex; gap: 0.35rem; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.35rem; margin: 0.6rem 0 1rem; overflow-x: auto; }
 .tab-bar [role="tab"] { appearance: none; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.45rem 0.85rem; font-family: var(--font-ui); font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease; }

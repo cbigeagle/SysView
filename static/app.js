@@ -19,8 +19,58 @@ class HistoryStore {
     };
   }
 }
+// H5aT1: extended deltas + trend over last 10 for spark
+HistoryStore.prototype.deltasExtended = function() {
+  if (this.items.length < 2) return null;
+  const a = this.items[this.items.length - 2].envelope.data || this.items[this.items.length - 2].envelope;
+  const b = this.items[this.items.length - 1].envelope.data || this.items[this.items.length - 1].envelope;
+  const aMem = a.Memory || {};
+  const bMem = b.Memory || {};
+  const res = {
+    availableDelta: (bMem.AvailableBytes || 0) - (aMem.AvailableBytes || 0),
+    inUseDelta: (bMem.InUseBytes || 0) - (aMem.InUseBytes || 0),
+    poolDelta: (bMem.NonpagedPoolBytes || 0) - (aMem.NonpagedPoolBytes || 0),
+    standbyDelta: (bMem.StandbyBytes || 0) - (aMem.StandbyBytes || 0),
+    modifiedDelta: (bMem.ModifiedBytes || 0) - (aMem.ModifiedBytes || 0)
+  };
+  // trend over last 10 samples (or all if fewer)
+  if (this.items.length >= 2) {
+    const startIdx = Math.max(0, this.items.length - 10);
+    const first = this.items[startIdx].envelope.data || this.items[startIdx].envelope;
+    const last = this.items[this.items.length - 1].envelope.data || this.items[this.items.length - 1].envelope;
+    const fMem = first.Memory || {};
+    const lMem = last.Memory || {};
+    res.availableTrend = (lMem.AvailableBytes || 0) - (fMem.AvailableBytes || 0);
+    res.inUseTrend = (lMem.InUseBytes || 0) - (fMem.InUseBytes || 0);
+    res.poolTrend = (lMem.NonpagedPoolBytes || 0) - (fMem.NonpagedPoolBytes || 0);
+    res.standbyTrend = (lMem.StandbyBytes || 0) - (fMem.StandbyBytes || 0);
+    res.modifiedTrend = (lMem.ModifiedBytes || 0) - (fMem.ModifiedBytes || 0);
+  }
+  return res;
+};
 const historyStore = new HistoryStore(450);
 if (typeof window !== 'undefined') { window.__historyStore = historyStore; window.HistoryStore = HistoryStore; window.historyStore = historyStore; }
+
+// H5aT1: pure helpers — formatDelta + confidenceForSampleCount
+function formatDelta(bytes) {
+  if (bytes === 0 || bytes == null || Number.isNaN(bytes)) return '\u00B10 GB';
+  const abs = Math.abs(bytes);
+  const sign = bytes > 0 ? '+' : '-';
+  // Show GB with 2 decimals for >=0.5 GB (512 MB) else MB with 0 decimals — ensures 0.7 GB => 0.70 GB and 220 MB stays MB
+  if (abs >= 512 * 1024 * 1024) return sign + (abs / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  if (abs >= 1024 * 1024) return sign + (abs / (1024 * 1024)).toFixed(0) + ' MB';
+  if (abs >= 1024) return sign + (abs / 1024).toFixed(0) + ' KB';
+  return sign + abs + ' B';
+}
+function confidenceForSampleCount(n) {
+  const intervalMs = (typeof window !== 'undefined' && typeof window.autoInterval === 'number') ? window.autoInterval : 2000;
+  const elapsedSec = n * intervalMs / 1000;
+  if (n <= 2) return { label: 'Low', class: 'confidence-low', elapsedSec };
+  if (n <= 10) return { label: 'Med', class: 'confidence-med', elapsedSec };
+  return { label: 'High', class: 'confidence-high', elapsedSec };
+}
+if (typeof window !== 'undefined') { window.formatDelta = formatDelta; window.confidenceForSampleCount = confidenceForSampleCount; window.deltasExtended = function() { return historyStore.deltasExtended(); }; }
+if (typeof module !== 'undefined' && module.exports) { module.exports.formatDelta = formatDelta; module.exports.confidenceForSampleCount = confidenceForSampleCount; }
 
 function buildExportPayload(envelope, {redact=true}={}){
   const clone = JSON.parse(JSON.stringify(envelope));
@@ -178,6 +228,7 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     let currentData = null;
     // H1T3: AutoRefresh controller
     let autoTimer = null, autoInterval = 2000, autoPaused = false;
+    if (typeof window !== 'undefined') window.autoInterval = autoInterval;
     function stopAuto(){ clearInterval(autoTimer); autoTimer=null; }
     function startAuto(){ stopAuto(); if(autoPaused) return; autoTimer=setInterval(grabSnapshot, autoInterval); }
     function updateHistoryBadge(){
@@ -533,6 +584,37 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
             // Render mutually-exclusive bar
             renderMemoryBar(mem);
         }
+        // H5aT1: pressure banner — deltasExtended + confidence
+        (function(){
+            const pd = document.getElementById('pressure-delta');
+            const pc = document.getElementById('pressure-confidence');
+            if(!pd || !pc) return;
+            const store = (typeof window !== 'undefined' && window.historyStore) ? window.historyStore : (typeof historyStore !== 'undefined' ? historyStore : null);
+            const n = store ? store.length : 0;
+            const confFn = (typeof window !== 'undefined' && window.confidenceForSampleCount) ? window.confidenceForSampleCount : (typeof confidenceForSampleCount !== 'undefined' ? confidenceForSampleCount : null);
+            const fmtFn = (typeof window !== 'undefined' && window.formatDelta) ? window.formatDelta : (typeof formatDelta !== 'undefined' ? formatDelta : null);
+            if(n < 2 || !store || !store.deltasExtended){
+                pd.textContent = n === 0 ? '' : '(' + n + ' sample' + (n===1?'':'s') + ', collecting\u2026)';
+                pc.textContent = '';
+                pc.className = '';
+                return;
+            }
+            const d = store.deltasExtended();
+            if(!d){ pd.textContent=''; pc.textContent=''; return; }
+            const memData = data.Memory || {};
+            const gb = function(v){ return (v/(1024*1024*1024)).toFixed(1); };
+            const availNow = memData.AvailableBytes || 0;
+            const availPrev = availNow - d.availableDelta;
+            const deltaStr = fmtFn ? fmtFn(d.availableDelta) : (d.availableDelta>0? '+'+(d.availableDelta/(1024*1024*1024)).toFixed(2)+' GB' : (d.availableDelta/(1024*1024*1024)).toFixed(2)+' GB');
+            const conf = confFn ? confFn(n) : {label: n<=2?'Low': n<=10?'Med':'High', class: n<=2?'confidence-low': n<=10?'confidence-med':'confidence-high', elapsedSec: n*2};
+            pd.textContent = 'Available ' + gb(availPrev) + '\u2192' + gb(availNow) + ' GB (' + deltaStr + ', ' + n + ' samples, ' + conf.elapsedSec + 's, ' + conf.label + ')';
+            let trendClass = 'trend-flat';
+            if(d.availableDelta > 0) trendClass = 'trend-down';
+            else if(d.availableDelta < 0) trendClass = 'trend-up';
+            pd.className = trendClass;
+            pc.textContent = conf.label;
+            pc.className = conf.class;
+        })();
         
         // Surface provider errors inline if any
         if (data._envelope && data._envelope.errors && data._envelope.errors.length) {
@@ -1841,11 +1923,10 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     updateHogSortUI();
     // init startup header aria-sort
     _renderStartupFiltered();
-    // H1T3: history controls — interval + pause + auto-refresh wiring
     if(historyIntervalSelect){
         historyIntervalSelect.addEventListener('change', () => {
             const v = parseInt(historyIntervalSelect.value,10);
-            if([2000,5000,10000].includes(v)) autoInterval=v;
+            if([2000,5000,10000].includes(v)) { autoInterval=v; if (typeof window !== 'undefined') window.autoInterval = v; }
             if(!autoPaused) startAuto();
         });
     }
