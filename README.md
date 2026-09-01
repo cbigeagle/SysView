@@ -217,7 +217,76 @@ Responses:
   405 on GET
 ```
 
----
+### Cap WSL — Preview + Write `.wslconfig` (No Auto-Shutdown)
+
+Permanently caps WSL2 memory by writing `%UserProfile%\.wslconfig` `[wsl2] memory=4GB` — preview first, no automatic `wsl --shutdown` (you trigger shutdown separately when ready).
+
+**What it does:**
+- Validates `memory` strictly with regex `^\d+(\.\d+)?\s*(GB|MB|G|M)$` (e.g. `4GB`, `4096MB`, `4G`, `4096M` → normalized to `4GB`/`4096MB`; bare `4` → `4GB`). On invalid → `400 {error:"Invalid memory value", details:"Expected e.g. 4GB, 4096MB"}`.
+- Preserves other sections and keys: reads existing `.wslconfig` if present, parses `INI`-style sections, updates/creates `[wsl2] memory=` while keeping comments and unrelated keys (e.g. `[wsl2] processors=4`, `[experimental] autoMemoryReclaim=gradual`).
+- Writes atomically via temp file + `os.Rename` (crash-safe), returns:
+  ```json
+  {"status":"success","path":"C:\\Users\\you\\.wslconfig","memory":"4GB","message":"Wrote memory=4GB to .wslconfig"}
+  ```
+- Never calls `wsl --shutdown` — the existing **Shut Down WSL** button remains separate and user-controlled. Use it after capping if you want the limit to take effect immediately.
+
+**How to use:**
+1. Open the dashboard → **WSL2 & Container Virtualization Analyzer** card → find the **Cap WSL** wizard (input + preview + Write button).
+2. Type a cap (placeholder `4GB`) → preview `<pre>` updates live (textContent) to `[wsl2]\nmemory=4GB` (aria-live, reuses code-preview tokens).
+3. Click **Write .wslconfig** → confirmation dialog:
+   ```
+   Write memory=4GB to %UserProfile%\.wslconfig?
+
+   Preview:
+   [wsl2]
+   memory=4GB
+
+   Existing settings in other sections will be preserved. This does not shut down WSL — use "Shut Down WSL" separately if you want the cap to take effect immediately.
+
+   Proceed?
+   ```
+4. Confirm → button shows “Writing…” → result banner (success green / invalid red / busy warning, aria-live) appears and dashboard refreshes config status via snapshot. No server restart needed.
+
+**Preserves other settings:**
+> Existing `.wslconfig` content outside `[wsl2] memory` is kept. Example: a file with `[wsl2]\nprocessors=4\nmemory=8GB\n[experimental]\nautoMemoryReclaim=gradual` rewritten as `memory=4GB` retains `processors=4` and the `[experimental]` section. If no `[wsl2]` exists, one is appended. Atomic temp+rename ensures no half-written file on crash.
+
+**Validation examples:**
+| Input | Normalized | Result |
+|-------|------------|--------|
+| `4GB` | `4GB` | 200 success |
+| `4096MB` | `4096MB` | 200 success |
+| `4G` | `4GB` | 200 success |
+| `4` | `4GB` | 200 success (unit defaults to GB) |
+| `not-a-size` | — | 400 Invalid memory value |
+| `""` / missing | — | 400 Invalid memory value |
+
+**Error handling:**
+- `400 Confirmation required` if `confirm` missing/false.
+- `400 Invalid memory value` with `details: "Expected e.g. 4GB, 4096MB"` on bad input.
+- `403 Missing or invalid capability token` / `403 Forbidden origin` (token+origin gated, like reclaim).
+- `429 WSL config write already in progress` (concurrency cap 1 via `wslConfigSem`, try-lock).
+- `500 Failed to write .wslconfig` with OS details (e.g. cannot resolve home directory, temp file error).
+- `405 Method not allowed. Use POST.` on GET.
+
+**No auto-shutdown — separate button:**
+> Capping does not shut down WSL. The separate **Shut Down WSL** button (`POST /api/wsl/shutdown`) remains the user-controlled way to apply the cap immediately. Until shutdown, WSL keeps running with its current reservation; after `wsl --shutdown` the next distro start respects the new cap.
+
+**API contract (for scripts/RMM):**
+```http
+POST /api/wsl/config
+Headers: X-SysView-Token: <capabilityToken>, Content-Type: application/json
+Body: {"memory":"4GB","confirm": true}
+Responses:
+  200 {status:"success", path, memory, message:"Wrote memory=4GB to .wslconfig"}
+  400 {error:"Invalid memory value", details:"Expected e.g. 4GB, 4096MB"}
+  400 {error:"Confirmation required"}
+  403 {error:"Missing or invalid capability token"}
+  403 {error:"Forbidden origin"}
+  405 {error:"Method not allowed. Use POST."}
+  429 {error:"WSL config write already in progress"}
+  500 {error:"Failed to write .wslconfig", details: ...}
+  405 on GET
+```
 
 ## 💡 Troubleshooting WSL2 Memory Starvation
 

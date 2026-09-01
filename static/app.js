@@ -2092,7 +2092,72 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
             }
         });
     }
-    // Simple filter debounce
+    // H5cT2: WSL cap wizard — preview, validation, write
+    const wslMemoryInput = document.getElementById('wsl-memory-input');
+    const wslConfigPreview = document.getElementById('wsl-config-preview');
+    const wslCapWriteBtn = document.getElementById('wsl-cap-write-btn');
+    const wslConfigResult = document.getElementById('wsl-config-result');
+    if (wslMemoryInput && wslConfigPreview && wslCapWriteBtn && wslConfigResult) {
+        const input = wslMemoryInput;
+        const preview = wslConfigPreview;
+        const btn = wslCapWriteBtn;
+        const result = wslConfigResult;
+        function isValidMemory(v) { return /^\s*\d+(?:\.\d+)?\s*(GB|MB|G|M)?\s*$/i.test(v); }
+        input.addEventListener('input', () => {
+            const v = input.value.trim() || '4GB';
+            const norm = v.trim();
+            preview.textContent = '[wsl2]\nmemory=' + norm;
+            btn.disabled = !isValidMemory(v || '4GB');
+        });
+        preview.textContent = '[wsl2]\nmemory=4GB';
+        btn.addEventListener('click', async () => {
+            const token = await ensureToken();
+            if (!token) { alert('Missing capability token — reload the page.'); return; }
+            const val = input.value.trim() || '4GB';
+            if (!isValidMemory(val)) {
+                result.textContent = 'Invalid memory value \u2014 expected e.g. 4GB';
+                result.className = 'wsl-config-result warning';
+                return;
+            }
+            const confirmMsg = `Write memory=${val} to %UserProfile%\\.wslconfig?\n\nPreview:\n[wsl2]\nmemory=${val}\n\nExisting settings in other sections will be preserved. This does not shut down WSL \u2014 use "Shut Down WSL" separately if you want the cap to take effect immediately.\n\nProceed?`;
+            if (!confirm(confirmMsg)) return;
+            btn.disabled = true;
+            btn.textContent = 'Writing...';
+            result.textContent = 'Writing .wslconfig...';
+            result.className = 'wsl-config-result';
+            try {
+                const res = await fetch('/api/wsl/config', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-SysView-Token': token }, body: JSON.stringify({ memory: val, confirm: true }) });
+                const bodyText = await res.text();
+                let data;
+                try { data = JSON.parse(bodyText); } catch { data = { error: bodyText }; }
+                if (!res.ok) {
+                    if (res.status === 400 && data.error && data.error.includes('Invalid')) {
+                        result.textContent = data.error + ': ' + (data.details || '');
+                        result.className = 'wsl-config-result warning';
+                    } else if (res.status === 403) {
+                        result.textContent = data.error || 'Forbidden';
+                        result.className = 'wsl-config-result warning';
+                    } else if (res.status === 429) {
+                        result.textContent = 'WSL config write already in progress';
+                        result.className = 'wsl-config-result warning';
+                    } else {
+                        result.textContent = 'Failed to write .wslconfig: ' + (data.details || data.error || bodyText).slice(0, 300);
+                        result.className = 'wsl-config-result danger';
+                    }
+                } else {
+                    result.textContent = data.message || `Wrote memory=${data.memory} to ${data.path}`;
+                    result.className = 'wsl-config-result success';
+                    grabSnapshot();
+                }
+            } catch (err) {
+                result.textContent = 'Failed: ' + err.message;
+                result.className = 'wsl-config-result danger';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Write .wslconfig';
+            }
+        });
+    }
     let searchTimeout = null;
     if(wvSearchInput){
         wvSearchInput.addEventListener('input', () => {

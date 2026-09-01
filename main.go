@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -35,6 +37,7 @@ var (
 	snapshotSem     = make(chan struct{}, 2)
 	wslSem         = make(chan struct{}, 1)
 	reclaimSem     = make(chan struct{}, 1)
+	wslConfigSem   = make(chan struct{}, 1)
 )
 // zero-alloc envelope validation types (H4T1)
 type envelopeTop struct {
@@ -93,6 +96,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/snapshot", handleSnapshot)
 	mux.HandleFunc("/api/wsl/shutdown", handleWslShutdown)
+	mux.HandleFunc("/api/wsl/config", handleWslConfig)
 	mux.HandleFunc("/api/reclaim/standby", handleReclaimStandby)
 	mux.HandleFunc("/api/config", handleConfig)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -694,5 +698,181 @@ if ($reclaimed -lt 0) { $reclaimed = 0 }
 		"afterBytes":     *res.AfterBytes,
 		"reclaimedBytes": *res.ReclaimedBytes,
 		"message":        msg,
+	})
+}
+func handleWslConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"Method not allowed. Use POST."}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if !isSameOrigin(r) {
+		http.Error(w, `{"error":"Forbidden origin"}`, http.StatusForbidden)
+		return
+	}
+	if !requireToken(r) {
+		http.Error(w, `{"error":"Missing or invalid capability token"}`, http.StatusForbidden)
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	var req map[string]json.RawMessage
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &req)
+	}
+	rawConfirm, ok := req["confirm"]
+	if !ok {
+		http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
+		return
+	}
+	var confirm bool
+	if err := json.Unmarshal(rawConfirm, &confirm); err != nil || !confirm {
+		http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
+		return
+	}
+	rawMem, ok := req["memory"]
+	if !ok {
+		http.Error(w, `{"error":"Invalid memory value","details":"Expected e.g. 4GB, 4096MB"}`, http.StatusBadRequest)
+		return
+	}
+	var memStr string
+	if err := json.Unmarshal(rawMem, &memStr); err != nil {
+		// fallback: trim quotes/spaces if not a JSON string
+		s := strings.TrimSpace(string(rawMem))
+		s = strings.Trim(s, `"`)
+		s = strings.TrimSpace(s)
+		memStr = s
+		if memStr == "" {
+			http.Error(w, `{"error":"Invalid memory value","details":"Expected e.g. 4GB, 4096MB"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	memStr = strings.TrimSpace(memStr)
+	reMem := regexp.MustCompile(`(?i)^\s*(\d+(?:\.\d+)?)\s*(GB|MB|G|M)?\s*$`)
+	m := reMem.FindStringSubmatch(memStr)
+	if m == nil {
+		http.Error(w, `{"error":"Invalid memory value","details":"Expected e.g. 4GB, 4096MB"}`, http.StatusBadRequest)
+		return
+	}
+	numStr := m[1]
+	unit := strings.ToUpper(strings.TrimSpace(m[2]))
+	switch unit {
+	case "G":
+		unit = "GB"
+	case "M":
+		unit = "MB"
+	case "":
+		unit = "GB"
+	}
+	memoryNormalized := numStr + unit
+	select {
+	case wslConfigSem <- struct{}{}:
+		defer func() { <-wslConfigSem }()
+	default:
+		http.Error(w, `{"error":"WSL config write already in progress"}`, http.StatusTooManyRequests)
+		return
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		http.Error(w, fmt.Sprintf(`{"error":"Failed to write .wslconfig","details":%q}`, "cannot resolve home directory"), http.StatusInternalServerError)
+		return
+	}
+	wslConfigPath := filepath.Join(homeDir, ".wslconfig")
+	dir := filepath.Dir(wslConfigPath)
+	data, err := os.ReadFile(wslConfigPath)
+	var newContent string
+	if err != nil && os.IsNotExist(err) {
+		newContent = "[wsl2]\nmemory=" + memoryNormalized + "\n"
+	} else if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Failed to write .wslconfig","details":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	} else {
+		text := string(data)
+		lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+		wsl2Exists := false
+		foundMemory := false
+		inWsl2 := false
+		wsl2End := -1
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+				if strings.EqualFold(trimmed, "[wsl2]") {
+					wsl2Exists = true
+					inWsl2 = true
+				} else {
+					if inWsl2 {
+						wsl2End = i
+						inWsl2 = false
+					}
+				}
+				continue
+			}
+			if inWsl2 {
+				t := strings.TrimSpace(line)
+				if t == "" || strings.HasPrefix(t, "#") || strings.HasPrefix(t, ";") {
+					continue
+				}
+				lower := strings.ToLower(t)
+				if strings.HasPrefix(lower, "memory") {
+					rest := strings.TrimSpace(lower[len("memory"):])
+					if strings.HasPrefix(rest, "=") {
+						lines[i] = "memory=" + memoryNormalized
+						foundMemory = true
+					}
+				}
+			}
+		}
+		if !wsl2Exists {
+			content := strings.Join(lines, "\n")
+			content = strings.TrimRight(content, "\r\n")
+			if content != "" {
+				newContent = content + "\n[wsl2]\nmemory=" + memoryNormalized + "\n"
+			} else {
+				newContent = "[wsl2]\nmemory=" + memoryNormalized + "\n"
+			}
+		} else if !foundMemory {
+			insertAt := len(lines)
+			if wsl2End != -1 {
+				insertAt = wsl2End
+			}
+			newLines := make([]string, 0, len(lines)+1)
+			newLines = append(newLines, lines[:insertAt]...)
+			newLines = append(newLines, "memory="+memoryNormalized)
+			newLines = append(newLines, lines[insertAt:]...)
+			newContent = strings.Join(newLines, "\n")
+			if !strings.HasSuffix(newContent, "\n") {
+				newContent += "\n"
+			}
+		} else {
+			newContent = strings.Join(lines, "\n")
+			if !strings.HasSuffix(newContent, "\n") {
+				newContent += "\n"
+			}
+		}
+	}
+	tmpFile, err := os.CreateTemp(dir, ".wslconfig.tmp-*")
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Failed to write .wslconfig","details":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	tmpName := tmpFile.Name()
+	if _, err := io.WriteString(tmpFile, newContent); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpName)
+		http.Error(w, fmt.Sprintf(`{"error":"Failed to write .wslconfig","details":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	tmpFile.Close()
+	if err := os.Rename(tmpName, wslConfigPath); err != nil {
+		os.Remove(tmpName)
+		http.Error(w, fmt.Sprintf(`{"error":"Failed to write .wslconfig","details":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "success",
+		"path":    wslConfigPath,
+		"memory":  memoryNormalized,
+		"message": "Wrote memory=" + memoryNormalized + " to .wslconfig",
 	})
 }
