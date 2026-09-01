@@ -311,6 +311,8 @@
                         <p class="wsl-note">
                             To cap WSL2 memory, create <code>.wslconfig</code> in your user profile folder (<code>%UserProfile%\.wslconfig</code>) with:
                         </p>
+                        <div class="wsl-cap-wizard"><input id="wsl-memory-input" type="text" placeholder="4GB" pattern="\s*\d+(?:\.\d+)?\s*(GB|MB|G|M)?\s*" title="e.g. 4GB, 4096MB" autocomplete="off"><pre id="wsl-config-preview" class="code-preview wsl-config-preview" aria-live="polite">[wsl2]
+memory=4GB</pre><button id="wsl-cap-write-btn" class="btn-secondary" type="button">Write .wslconfig</button><div id="wsl-config-result" class="wsl-config-result" aria-live="polite"></div></div>
                         <pre class="code-preview">[wsl2]
 memory=4GB</pre>
                         <p class="wsl-note">On current Windows builds, WSL Settings also exposes memory options. Prefer Settings when available. See <a href="https://learn.microsoft.com/en-us/windows/wsl/wsl-config" target="_blank" rel="noopener">wsl-config docs</a>.</p>

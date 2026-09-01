@@ -526,6 +526,16 @@ tbody tr:hover td { background: color-mix(in srgb, var(--surface-2) 60%, transpa
 .reclaim-result.success { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--good); color: var(--text-1); }
 .reclaim-result.warning { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--warn); color: var(--text-1); }
 .reclaim-result.danger { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--danger); color: var(--text-1); }
+/* H5cT2: WSL cap wizard */
+.wsl-cap-wizard { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-top: 0.6rem; }
+#wsl-memory-input { width: 120px; background: var(--surface-1); color: var(--text-1); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.35rem 0.5rem; font-family: var(--font-mono); font-size: 0.82rem; }
+#wsl-memory-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); outline: none; }
+.wsl-config-preview { min-height: 40px; flex: 1 1 160px; margin-top: 0; }
+.wsl-config-result { margin-top: 0.5rem; font-size: 0.82rem; line-height: 1.5; min-height: 1.2rem; flex-basis: 100%; }
+.wsl-config-result:empty { display: none; }
+.wsl-config-result.success { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--good); color: var(--text-1); }
+.wsl-config-result.warning { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--warn); color: var(--text-1); }
+.wsl-config-result.danger { padding: 0.6rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--surface-2); border-left: 3px solid var(--danger); color: var(--text-1); }
 /* WSL */
 .wsl-content-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .wsl-status-card, .wsl-advice-card {
