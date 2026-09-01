@@ -27,6 +27,11 @@
                 </div>
             </div>
             <div class="header-right">
+                <div id="history-controls" class="history-controls">
+                    <span id="history-badge" aria-live="polite">No samples yet</span>
+                    <select id="history-interval" aria-label="Auto-refresh interval"><option value="2000">2s</option><option value="5000">5s</option><option value="10000">10s</option></select>
+                    <button id="history-pause" class="btn-secondary">Pause</button>
+                </div>
                 <div class="status-badge" id="last-update-container">
                     <span class="pulse-indicator"></span>
                     <span id="last-updated">Waiting for snapshot...</span>

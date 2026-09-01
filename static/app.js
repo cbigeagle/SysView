@@ -1,3 +1,27 @@
+// H1T3: HistoryStore — bounded ring buffer (cap 450 = 15min @ 2s) + AutoRefresh harness
+class HistoryStore {
+  constructor(cap = 450) { this.cap = cap; this.items = []; }
+  push(envelope) { this.items.push({ at: Date.now(), envelope }); if (this.items.length > this.cap) this.items.shift(); }
+  get length() { return this.items.length; }
+  latest() { return this.items.length ? this.items[this.items.length - 1].envelope : null; }
+  at(i) { return this.items[i] ? this.items[i].envelope : null; }
+  toJSON() { return this.items.map(x => x.envelope); }
+  deltas() {
+    if (this.items.length < 2) return null;
+    const a = this.items[this.items.length - 2].envelope.data || this.items[this.items.length - 2].envelope;
+    const b = this.items[this.items.length - 1].envelope.data || this.items[this.items.length - 1].envelope;
+    const aMem = a.Memory || {};
+    const bMem = b.Memory || {};
+    return {
+      availableDelta: (bMem.AvailableBytes || 0) - (aMem.AvailableBytes || 0),
+      inUseDelta: (bMem.InUseBytes || 0) - (aMem.InUseBytes || 0),
+      poolDelta: (bMem.NonpagedPoolBytes || 0) - (aMem.NonpagedPoolBytes || 0)
+    };
+  }
+}
+const historyStore = new HistoryStore(450);
+if (typeof window !== 'undefined') { window.__historyStore = historyStore; window.HistoryStore = HistoryStore; window.historyStore = historyStore; }
+
 // H1T2 test hook: pure helper for memory unavailable detection (providers.memory === 'unavailable' or zero bytes)
 function isMemUnavailable(providers, mem) {
 	return (providers && providers.memory === 'unavailable') || !mem || (mem.VisiblePhysicalBytes === 0 && mem.TotalPhysicalBytes === 0);
@@ -64,8 +88,77 @@ document.addEventListener('DOMContentLoaded', () => {
     const wvSearchInput = document.getElementById('wv-search');
     const memoryHogsTable = document.getElementById('memory-hogs-table');
     const diagnosticInsightsContainer = document.getElementById('diagnostic-insights');
-    
+    const historyBadge = document.getElementById('history-badge');
+    const historyIntervalSelect = document.getElementById('history-interval');
+    const historyPauseBtn = document.getElementById('history-pause');
+
     let currentData = null;
+    // H1T3: AutoRefresh controller
+    let autoTimer = null, autoInterval = 2000, autoPaused = false;
+    function stopAuto(){ clearInterval(autoTimer); autoTimer=null; }
+    function startAuto(){ stopAuto(); if(autoPaused) return; autoTimer=setInterval(grabSnapshot, autoInterval); }
+    function updateHistoryBadge(){
+        if(!historyBadge) return;
+        const n = historyStore.length;
+        if(n===0){ historyBadge.textContent='No samples yet'; return; }
+        const lastAt = historyStore.items[historyStore.items.length-1].at;
+        const secs = Math.round((Date.now()-lastAt)/1000);
+        const age = secs<5 ? 'just now' : secs<60 ? secs+'s ago' : Math.round(secs/60)+'m ago';
+        historyBadge.textContent = 'Updated ' + age + ' \u00B7 ' + n + ' sample' + (n===1?'':'s');
+    }
+    function formatDelta(bytes){
+        if(bytes===0||bytes==null) return '';
+        const sign = bytes>0?'+':'';
+        const abs = Math.abs(bytes);
+        let v;
+        if(abs>=1024*1024*1024) v=(abs/(1024*1024*1024)).toFixed(1)+' GB';
+        else if(abs>=1024*1024) v=(abs/(1024*1024)).toFixed(0)+' MB';
+        else if(abs>=1024) v=(abs/1024).toFixed(0)+' KB';
+        else v=abs+' B';
+        return ' ('+sign+v+' since last)';
+    }
+    function renderSparklines(){
+        const points = historyStore.items.slice(-30).map(function(it){
+            const env = it.envelope; const d = env.data || env; const m = d.Memory || {};
+            return m.AvailableBytes || 0;
+        });
+        const cards = document.querySelectorAll('.detail-card');
+        if(cards.length===0) return;
+        let wraps = document.querySelectorAll('.sparkline-wrap');
+        if(wraps.length===0){
+            cards.forEach(function(card){
+                const w=document.createElement('div'); w.className='sparkline-wrap'; w.setAttribute('aria-hidden','true');
+                const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+                svg.setAttribute('width','120'); svg.setAttribute('height','28'); svg.setAttribute('viewBox','0 0 120 28'); svg.classList.add('sparkline');
+                w.appendChild(svg);
+                const deltaEl=document.createElement('span'); deltaEl.className='sparkline-delta'; w.appendChild(deltaEl);
+                card.appendChild(w);
+            });
+            wraps=document.querySelectorAll('.sparkline-wrap');
+        }
+        if(points.length<2){
+            wraps.forEach(function(w){ const s=w.querySelector('svg'); if(s) s.innerHTML=''; const d=w.querySelector('.sparkline-delta'); if(d) d.textContent=''; });
+            return;
+        }
+        const min=Math.min.apply(null,points), max=Math.max.apply(null,points);
+        const range=(max-min)||1;
+        const step=120/(points.length-1);
+        const path=points.map(function(v,i){
+            const x=i*step; const y=28 - ((v-min)/range)*22 - 3;
+            return (i===0?'M':'L')+x.toFixed(1)+','+y.toFixed(1);
+        }).join(' ');
+        wraps.forEach(function(w){
+            const svg=w.querySelector('svg');
+            if(!svg) return;
+            svg.innerHTML='<path d="'+path+'" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>';
+        });
+        const d = historyStore.deltas();
+        if(d && wraps[0]){
+            const deltaEl=wraps[0].querySelector('.sparkline-delta');
+            if(deltaEl) deltaEl.textContent = formatDelta(d.availableDelta);
+        }
+    }
+    if(typeof window!=='undefined'){ window.updateHistoryBadge=updateHistoryBadge; window.renderSparklines=renderSparklines; window.startAuto=startAuto; window.stopAuto=stopAuto; }
 
     // Helper functions
     function formatBytes(bytes, decimals = 2) {
@@ -246,6 +339,10 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Render UI (handles unavailable providers)
             updateUI(data);
+            // H1T3: bounded history + badge + sparklines
+            historyStore.push(envelope);
+            updateHistoryBadge();
+            renderSparklines();
             
         } catch (error) {
             console.error('Error fetching snapshot:', error);
@@ -1225,6 +1322,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 150);
     });
 
-    // Initial load
+    // H1T3: history controls — interval + pause + auto-refresh wiring
+    if(historyIntervalSelect){
+        historyIntervalSelect.addEventListener('change', () => {
+            const v = parseInt(historyIntervalSelect.value,10);
+            if([2000,5000,10000].includes(v)) autoInterval=v;
+            if(!autoPaused) startAuto();
+        });
+    }
+    if(historyPauseBtn){
+        historyPauseBtn.addEventListener('click', () => {
+            autoPaused = !autoPaused;
+            if(autoPaused){ stopAuto(); historyPauseBtn.textContent='Resume'; }
+            else { historyPauseBtn.textContent='Pause'; startAuto(); }
+        });
+    }
+
+    // Initial load + auto-refresh
     grabSnapshot();
+    startAuto();
+    // respect prefers-reduced-motion: if user prefers reduced motion, pause auto-refresh by default but allow resume
+    try{
+        if(window.matchMedia('(prefers-reduced-motion: reduce)').matches){
+            // do not auto-pause; just ensure no sparkline animation (CSS handles) — keep auto going
+        }
+    }catch{}
 });
