@@ -141,6 +141,87 @@ func TestHandleReclaimStandby_RateLimit(t *testing.T) {
 		t.Fatalf("want 429 got %d body %s", rr.Code, rr.Body.String())
 	}
 }
+func TestHandleWslConfig_RequiresToken(t *testing.T) {
+	capabilityToken = "test-token-123"
+	body := strings.NewReader(`{"memory":"4GB","confirm":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/wsl/config", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleWslConfig(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("want 403 without token, got %d body %s", rr.Code, rr.Body.String())
+	}
+}
+func TestHandleWslConfig_OriginRejected(t *testing.T) {
+	capabilityToken = "test-token-123"
+	body := strings.NewReader(`{"memory":"4GB","confirm":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/wsl/config", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Header.Set("Origin", "https://evil.example")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleWslConfig(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("want 403 for evil origin, got %d body %s", rr.Code, rr.Body.String())
+	}
+}
+func TestHandleWslConfig_RequiresConfirm(t *testing.T) {
+	capabilityToken = "test-token-123"
+	body := strings.NewReader(`{"memory":"4GB"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/wsl/config", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleWslConfig(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 without confirm, got %d body %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Confirmation required") {
+		t.Fatalf("want Confirmation required, got %s", rr.Body.String())
+	}
+}
+func TestHandleWslConfig_InvalidMemory(t *testing.T) {
+	capabilityToken = "test-token-123"
+	body := strings.NewReader(`{"memory":"not-a-size","confirm":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/wsl/config", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleWslConfig(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for invalid memory, got %d body %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Invalid memory value") {
+		t.Fatalf("want Invalid memory value, got %s", rr.Body.String())
+	}
+}
+func TestHandleWslConfig_RateLimit(t *testing.T) {
+	capabilityToken = "test-token-123"
+	wslConfigSem <- struct{}{}
+	defer func() { <-wslConfigSem }()
+	body := strings.NewReader(`{"memory":"4GB","confirm":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/wsl/config", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-SysView-Token", "test-token-123")
+	req.Host = "localhost:22880"
+	rr := httptest.NewRecorder()
+	handleWslConfig(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("want 429 got %d body %s", rr.Code, rr.Body.String())
+	}
+}
+func TestHandleWslConfig_MethodNotAllowed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/wsl/config", nil)
+	rr := httptest.NewRecorder()
+	handleWslConfig(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("want 405 got %d", rr.Code)
+	}
+}
 func abs(x int64) int64 {
 	if x < 0 {
 		return -x
