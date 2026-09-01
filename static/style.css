@@ -416,8 +416,27 @@ table th[aria-sort="none"]::after { content: " \25BD"; opacity: 0.35; font-size:
 .wv-metric-val.cpu { color: var(--info); }
 .wv-metric-val.mem { color: var(--text-1); }
 
+/* H3T2: Runtime groups reuse wv-group-card tokens */
+.runtime-group-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; transition: var(--transition); }
+.runtime-group-card.expanded .wv-expand-arrow { transform: rotate(180deg); }
+.runtime-group-card .wv-group-details { max-height: 0; overflow: hidden; transition: max-height 0.28s ease; }
+.runtime-group-card.expanded .wv-group-details { max-height: 1200px; }
+
+/* H3T2: Sensors */
+.sensor-strip { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; min-height: 1.5rem; }
+.sensor-chip { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.76rem; font-weight: 600; padding: 0.3rem 0.65rem; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-1); }
+.sensor-chip.sensor-good { background: color-mix(in srgb, var(--good) 12%, var(--surface-1)); color: var(--good); border-color: color-mix(in srgb, var(--good) 22%, transparent); }
+.sensor-chip.sensor-warn { background: color-mix(in srgb, var(--warn) 14%, var(--surface-1)); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+.sensor-chip.sensor-danger { background: color-mix(in srgb, var(--danger) 12%, var(--surface-1)); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 22%, transparent); }
+.sensor-chip.sensor-unavailable { background: var(--surface-2); color: var(--text-2); }
+
+/* H3T2: Docker */
+.docker-strip { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.85rem; padding: 0.65rem 0.75rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.docker-strip.hidden { display: none !important; }
+.docker-badge { display: inline-flex; align-items: center; font-size: 0.74rem; font-weight: 600; padding: 0.25rem 0.55rem; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-1); font-family: var(--font-mono); }
+.docker-badge.docker-count { background: var(--accent); color: var(--accent-contrast); border-color: color-mix(in srgb, var(--accent) 25%, transparent); font-family: var(--font-ui); }
+
 /* Split row */
-.dashboard-row { display: flex; gap: 1rem; }
 .half-block { flex: 1; min-width: 0; }
 
 /* Tables */

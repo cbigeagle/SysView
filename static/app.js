@@ -117,18 +117,21 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     
     const webviewGroupsContainer = document.getElementById('webview-groups');
     const wvSearchInput = document.getElementById('wv-search');
+    const runtimeGroupsContainer = document.getElementById('runtime-groups');
+    const runtimeSearchInput = document.getElementById('runtime-search');
+    const sensorChips = document.getElementById('sensor-chips');
+    const dockerStrip = document.getElementById('docker-strip');
     const memoryHogsTable = document.getElementById('memory-hogs-table');
     const diagnosticInsightsContainer = document.getElementById('diagnostic-insights');
     const historyBadge = document.getElementById('history-badge');
     const historyIntervalSelect = document.getElementById('history-interval');
     const historyPauseBtn = document.getElementById('history-pause');
-
     // H1T4: Tabs — role=tablist wiring + persistence
     const tabBtns = [...document.querySelectorAll('[role="tab"]')];
     const tabPanels = [...document.querySelectorAll('[data-panel]')];
     let _activeTab = null;
     function activateTab(name){
-      const valid = ['overview','processes','webview','wsl','storage','startup'];
+      const valid = ['overview','processes','webview','runtimes','wsl','storage','startup'];
       if(!valid.includes(name)) name='overview';
       _activeTab = name;
       tabBtns.forEach(b=>{ const on=b.dataset.tab===name; b.setAttribute('aria-selected', String(on)); b.tabIndex = on ? 0 : -1; });
@@ -154,7 +157,7 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     (function initTab(){
       let saved=null; try{ saved = localStorage.getItem('sysview-tab'); }catch{}
       const hash = (location.hash||'').replace('#','').toLowerCase();
-      const valid=['overview','processes','webview','wsl','storage','startup'];
+      const valid=['overview','processes','webview','runtimes','wsl','storage','startup'];
       let initial='overview';
       if(valid.includes(hash)) initial=hash;
       else if(valid.includes(saved)) initial=saved;
@@ -545,6 +548,29 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
         // 5. Group WebView2 Processes
         renderWebViewGroups(data.WebViewProcesses, allProcessesMap);
         
+        // 5b. RuntimeGroups unified (WebView2/Electron/Node/Python)
+        (function(){
+            let groups = data.RuntimeGroups;
+            if(!groups || groups.length===0){
+                if(data.WebViewProcesses && data.WebViewProcesses.length){
+                    const tmp={};
+                    data.WebViewProcesses.forEach(function(proc){
+                        const host=findHostApp(proc, allProcessesMap);
+                        const key='webview2::'+host.name.toLowerCase();
+                        if(!tmp[key]) tmp[key]={ Runtime:'webview2', Host: host.name, Count:0, TotalWorkingSet:0, TotalCpu:0, Pids:[] };
+                        tmp[key].Count+=1;
+                        tmp[key].TotalWorkingSet+=proc.WorkingSet||0;
+                        tmp[key].TotalCpu+=proc.CPU||0;
+                        tmp[key].Pids.push(proc.PID);
+                    });
+                    groups=Object.values(tmp);
+                } else { groups=[]; }
+            }
+            renderRuntimeGroups(groups);
+        })();
+        renderSensors(data.Sensors);
+        renderDocker(data.Docker);
+        
         // 6. Render top memory hogs (labels corrected below)
         renderMemoryHogs(data.AllProcesses);
         
@@ -556,7 +582,6 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
 
         // 6.7 Startup
         renderStartup(data.Startup || []);
-        
         // 7. Run diagnostics recommendations engine
         runDiagnosticsEngine(mem, data.WebViewProcesses, allProcessesMap);
     }
@@ -802,6 +827,212 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
             
             container.appendChild(card);
         });
+    }
+
+    // H3T2: RuntimeGroups unified (Runtime+Host grouping, reuse findHostApp logic)
+    let _runtimeGroupsData=[];
+    function renderRuntimeGroups(groups){
+        _runtimeGroupsData = Array.isArray(groups) ? groups.slice() : [];
+        // sort by TotalWorkingSet desc for stable display
+        _runtimeGroupsData.sort(function(a,b){ return (b.TotalWorkingSet||0)-(a.TotalWorkingSet||0); });
+        displayFilteredRuntimeGroups();
+        if(typeof window!=='undefined'){ window.renderRuntimeGroups=renderRuntimeGroups; window._runtimeGroupsData=_runtimeGroupsData; }
+    }
+    function displayFilteredRuntimeGroups(){
+        const container = runtimeGroupsContainer;
+        if(!container) return;
+        const query = runtimeSearchInput ? runtimeSearchInput.value.toLowerCase().trim() : '';
+        container.innerHTML='';
+        const filtered = _runtimeGroupsData.filter(function(g){
+            if(!query) return true;
+            const rt=(g.Runtime||'').toLowerCase();
+            const host=(g.Host||'').toLowerCase();
+            if(rt.includes(query) || host.includes(query)) return true;
+            if(Array.isArray(g.Pids) && g.Pids.some(function(pid){ return String(pid).includes(query); })) return true;
+            return false;
+        });
+        if(filtered.length===0){
+            const empty=document.createElement('div');
+            empty.className='loading-state';
+            const p=document.createElement('p');
+            p.textContent = _runtimeGroupsData.length===0 ? 'No runtime groups found.' : 'No runtime groups match filter.';
+            empty.appendChild(p);
+            container.appendChild(empty);
+            return;
+        }
+        filtered.forEach(function(group, index){
+            const runtime=(group.Runtime||'unknown').toString();
+            const host=(group.Host||'Unknown Host').toString();
+            const initials=host.replace('.exe','').substring(0,2).toUpperCase() || 'RU';
+            const card=document.createElement('div');
+            card.className='runtime-group-card ' + (index===0 ? 'expanded' : '');
+            const header=document.createElement('div');
+            header.className='wv-group-header';
+            header.tabIndex=0;
+            header.setAttribute('role','button');
+            header.setAttribute('aria-expanded', index===0 ? 'true' : 'false');
+            const info=document.createElement('div');
+            info.className='wv-group-info';
+            info.style.display='flex';
+            info.style.alignItems='center';
+            info.style.gap='0.65rem';
+            const icon=document.createElement('div');
+            icon.className='wv-app-icon';
+            icon.textContent=initials;
+            const details=document.createElement('div');
+            details.className='wv-app-details';
+            const nameSpan=document.createElement('span');
+            nameSpan.className='wv-app-name';
+            nameSpan.textContent=host;
+            const runtimeBadge=document.createElement('span');
+            runtimeBadge.className='role-badge role-'+runtime.toLowerCase();
+            runtimeBadge.textContent=runtime;
+            details.appendChild(nameSpan);
+            details.appendChild(runtimeBadge);
+            info.appendChild(icon);
+            info.appendChild(details);
+            const stats=document.createElement('div');
+            stats.className='wv-group-stats';
+            const countDiv=document.createElement('div');
+            countDiv.className='wv-stat';
+            const countLabel=document.createElement('span');
+            countLabel.className='label';
+            countLabel.textContent='Count';
+            const countVal=document.createElement('span');
+            countVal.className='value';
+            countVal.textContent=String(group.Count||0);
+            countDiv.appendChild(countLabel);
+            countDiv.appendChild(countVal);
+            const memDiv=document.createElement('div');
+            memDiv.className='wv-stat';
+            const memLabel=document.createElement('span');
+            memLabel.className='label';
+            memLabel.textContent='Total RAM';
+            const memVal=document.createElement('span');
+            memVal.className='value mem';
+            memVal.textContent=((group.TotalWorkingSet||0)/(1024*1024)).toFixed(0)+' MB';
+            memDiv.appendChild(memLabel);
+            memDiv.appendChild(memVal);
+            const cpuDiv=document.createElement('div');
+            cpuDiv.className='wv-stat';
+            const cpuLabel=document.createElement('span');
+            cpuLabel.className='label';
+            cpuLabel.textContent='Total CPU';
+            const cpuVal=document.createElement('span');
+            cpuVal.className='value cpu';
+            cpuVal.textContent=(group.TotalCpu||0) > 0 ? (group.TotalCpu).toFixed(1)+'%' : '0.0%';
+            cpuDiv.appendChild(cpuLabel);
+            cpuDiv.appendChild(cpuVal);
+            stats.appendChild(countDiv);
+            stats.appendChild(memDiv);
+            stats.appendChild(cpuDiv);
+            const arrow=document.createElement('div');
+            arrow.className='wv-expand-arrow';
+            arrow.innerHTML='<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+            header.appendChild(info);
+            header.appendChild(stats);
+            header.appendChild(arrow);
+            const detailsWrap=document.createElement('div');
+            detailsWrap.className='wv-group-details';
+            const list=document.createElement('div');
+            list.className='wv-process-list';
+            const pids = Array.isArray(group.Pids) ? group.Pids : [];
+            if(pids.length===0){
+                const emptyRow=document.createElement('div');
+                emptyRow.className='wsl-empty';
+                emptyRow.textContent='No PIDs reported.';
+                list.appendChild(emptyRow);
+            } else {
+                pids.forEach(function(pid){
+                    const row=document.createElement('div');
+                    row.className='wv-process-row';
+                    const identity=document.createElement('div');
+                    identity.className='wv-proc-identity';
+                    const pidBadge=document.createElement('span');
+                    pidBadge.className='pid-badge';
+                    pidBadge.textContent='PID '+String(pid);
+                    identity.appendChild(pidBadge);
+                    const desc=document.createElement('div');
+                    desc.className='wv-proc-desc';
+                    desc.textContent=runtime+' host '+host;
+                    row.appendChild(identity);
+                    row.appendChild(desc);
+                    list.appendChild(row);
+                });
+            }
+            detailsWrap.appendChild(list);
+            card.appendChild(header);
+            card.appendChild(detailsWrap);
+            const toggle=function(){
+                const isExpanded=card.classList.toggle('expanded');
+                header.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+            };
+            header.addEventListener('click', toggle);
+            header.addEventListener('keydown', function(e){ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); toggle(); }});
+            container.appendChild(card);
+        });
+    }
+    if(typeof window!=='undefined'){ window.renderRuntimeGroups=renderRuntimeGroups; window.displayFilteredRuntimeGroups=displayFilteredRuntimeGroups; }
+    function renderSensors(sensors){
+        if(!sensorChips) return;
+        sensorChips.innerHTML='';
+        const s = sensors || {};
+        const cpuTemp = (s.CpuTempC != null) ? s.CpuTempC : null;
+        const gpuTemp = (s.GpuTempC != null) ? s.GpuTempC : null;
+        const fanRpm = (s.FanRpm != null) ? s.FanRpm : null;
+        function tempBadge(temp){
+            if(temp==null) return 'unavailable';
+            if(temp>90) return 'danger';
+            if(temp>80) return 'warn';
+            return 'good';
+        }
+        function makeChip(label, valueText, badge){
+            const chip=document.createElement('span');
+            chip.className='sensor-chip sensor-'+badge;
+            chip.textContent=label+': '+valueText;
+            chip.title=label+' '+valueText;
+            return chip;
+        }
+        if(cpuTemp==null){
+            sensorChips.appendChild(makeChip('CPU Temp','-- unavailable','unavailable'));
+        } else {
+            const badge=tempBadge(cpuTemp);
+            sensorChips.appendChild(makeChip('CPU Temp', String(cpuTemp)+' C', badge));
+        }
+        if(gpuTemp!=null){
+            const badge=tempBadge(gpuTemp);
+            sensorChips.appendChild(makeChip('GPU Temp', String(gpuTemp)+' C', badge));
+        }
+        if(fanRpm!=null){
+            sensorChips.appendChild(makeChip('Fan', String(fanRpm)+' RPM', 'good'));
+        }
+        if(typeof window!=='undefined') window.renderSensors=renderSensors;
+    }
+    function renderDocker(docker){
+        if(!dockerStrip) return;
+        dockerStrip.innerHTML='';
+        const containers = (docker && Array.isArray(docker.Containers)) ? docker.Containers : [];
+        if(containers.length===0){
+            dockerStrip.classList.add('hidden');
+            dockerStrip.style.display='none';
+            return;
+        }
+        dockerStrip.classList.remove('hidden');
+        dockerStrip.style.display='';
+        const countBadge=document.createElement('span');
+        countBadge.className='docker-badge docker-count';
+        countBadge.textContent=String(containers.length)+' containers';
+        dockerStrip.appendChild(countBadge);
+        containers.slice(0,3).forEach(function(c){
+            const badge=document.createElement('span');
+            badge.className='docker-badge';
+            const img=(c.Image||'').toString();
+            const state=(c.State||'').toString();
+            badge.textContent=img + ' (' + state + ')';
+            badge.title=(c.Names||'') ? (c.Names+' - '+img) : img;
+            dockerStrip.appendChild(badge);
+        });
+        if(typeof window!=='undefined') window.renderDocker=renderDocker;
     }
 
     const processDatabase = {
@@ -1557,13 +1788,21 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
     
     // Simple filter debounce
     let searchTimeout = null;
-    wvSearchInput.addEventListener('input', () => {
-        clearTimeout(searchTimeout);
-        searchTimeout = setTimeout(() => {
-            displayFilteredWebViewGroups();
-        }, 150);
-    });
-    // H2T4: startup filter debounce
+    if(wvSearchInput){
+        wvSearchInput.addEventListener('input', () => {
+            clearTimeout(searchTimeout);
+            searchTimeout = setTimeout(() => {
+                displayFilteredWebViewGroups();
+            }, 150);
+        });
+    }
+    let runtimeSearchTimeout=null;
+    if(runtimeSearchInput){
+        runtimeSearchInput.addEventListener('input', ()=>{
+            clearTimeout(runtimeSearchTimeout);
+            runtimeSearchTimeout=setTimeout(()=>{ displayFilteredRuntimeGroups(); }, 150);
+        });
+    }
     const startupFilter = document.getElementById('startup-filter');
     let startupSearchTimeout=null;
     if(startupFilter){
