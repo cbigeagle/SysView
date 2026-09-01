@@ -34,6 +34,7 @@ var (
 	capabilityToken string
 	snapshotSem     = make(chan struct{}, 2)
 	wslSem         = make(chan struct{}, 1)
+	reclaimSem     = make(chan struct{}, 1)
 )
 // zero-alloc envelope validation types (H4T1)
 type envelopeTop struct {
@@ -89,10 +90,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error sub-embedding static files: %v", err)
 	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/snapshot", handleSnapshot)
 	mux.HandleFunc("/api/wsl/shutdown", handleWslShutdown)
+	mux.HandleFunc("/api/reclaim/standby", handleReclaimStandby)
 	mux.HandleFunc("/api/config", handleConfig)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -544,4 +545,154 @@ func handleWslShutdown(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Println("WSL VM successfully shut down.")
 	w.Write([]byte(`{"status": "success", "message": "WSL VM successfully shut down and memory released."}`))
+}
+
+func handleReclaimStandby(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"Method not allowed. Use POST."}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if !isSameOrigin(r) {
+		http.Error(w, `{"error":"Forbidden origin"}`, http.StatusForbidden)
+		return
+	}
+	if !requireToken(r) {
+		http.Error(w, `{"error":"Missing or invalid capability token"}`, http.StatusForbidden)
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if len(body) == 0 {
+		http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
+		return
+	}
+	var req map[string]json.RawMessage
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
+		return
+	}
+	if raw, ok := req["confirm"]; ok {
+		var v bool
+		if err := json.Unmarshal(raw, &v); err != nil || !v {
+			http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
+			return
+		}
+	} else {
+		http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
+		return
+	}
+	select {
+	case reclaimSem <- struct{}{}:
+		defer func() { <-reclaimSem }()
+	default:
+		http.Error(w, `{"error":"Reclaim already in progress"}`, http.StatusTooManyRequests)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	psScript := `
+$ErrorActionPreference='Stop'
+function Get-StandbyBytes {
+    $m = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory -ErrorAction Stop
+    return [int64]($m.StandbyCacheCoreBytes + $m.StandbyCacheNormalPriorityBytes + $m.StandbyCacheReserveBytes)
+}
+$before = Get-StandbyBytes
+try {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class NativeMem {
+    [DllImport("ntdll.dll")] public static extern int NtSetSystemInformation(int v, ref int a, int b);
+    [DllImport("advapi32.dll", SetLastError=true)] public static extern bool OpenProcessToken(IntPtr h, int a, out IntPtr t);
+    [DllImport("advapi32.dll", SetLastError=true)] public static extern bool LookupPrivilegeValue(string s, string n, out long id);
+    [DllImport("advapi32.dll", SetLastError=true)] public static extern bool AdjustTokenPrivileges(IntPtr t, bool d, ref long b, int c, IntPtr e, IntPtr f);
+}
+"@ -ErrorAction Stop
+    $tok=[IntPtr]::Zero
+    if ([NativeMem]::OpenProcessToken((Get-Process -Id $PID).Handle, 32, [ref]$tok)) {
+        $luid=0
+        if ([NativeMem]::LookupPrivilegeValue($null, "SeProfileSingleProcessPrivilege", [ref]$luid)) {
+            [void][NativeMem]::AdjustTokenPrivileges($tok, $false, [ref]$luid, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+        }
+    }
+    $info=4
+    $st=[NativeMem]::NtSetSystemInformation(80, [ref]$info, 4)
+    if ($st -ne 0) {
+        if ($st -eq 1314 -or $st.ToString('X8') -eq 'C0000061') { Write-Error "REQUIRES_ADMIN"; exit 1 }
+        $msg=[System.ComponentModel.Win32Exception]::new($st).Message
+        if ($msg -match "privilege") { Write-Error "REQUIRES_ADMIN"; exit 1 }
+        Write-Error "RECLAIM_FAILED: NtSetSystemInformation status 0x$($st.ToString('X8')) $msg"
+        exit 1
+    }
+} catch {
+    $msg=$_.Exception.Message
+    if ($msg -match "privilege" -or $msg -match "REQUIRES_ADMIN") { Write-Error "REQUIRES_ADMIN"; exit 1 }
+    if ($msg -match "REQUIRES_ADMIN") { Write-Error "REQUIRES_ADMIN"; exit 1 }
+    Write-Error "RECLAIM_FAILED: $msg"
+    exit 1
+}
+Start-Sleep -Milliseconds 200
+$after = Get-StandbyBytes
+$reclaimed = $before - $after
+if ($reclaimed -lt 0) { $reclaimed = 0 }
+@{beforeBytes=$before; afterBytes=$after; reclaimedBytes=$reclaimed} | ConvertTo-Json -Compress | Write-Host
+`
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		http.Error(w, `{"error":"Reclaim timed out"}`, http.StatusGatewayTimeout)
+		return
+	}
+	stderrStr := stderr.String()
+	if strings.Contains(stderrStr, "REQUIRES_ADMIN") || strings.Contains(strings.ToLower(stderrStr), "privilege") {
+		http.Error(w, `{"error":"Requires Administrator","details":"Run SysView.exe as Administrator to reclaim standby"}`, http.StatusForbidden)
+		return
+	}
+	if strings.Contains(stderrStr, "RECLAIM_FAILED") {
+		http.Error(w, fmt.Sprintf(`{"error":"Reclaim failed","details":%q}`, stderrStr), http.StatusInternalServerError)
+		return
+	}
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Reclaim failed","details":%q}`, stderrStr), http.StatusInternalServerError)
+		return
+	}
+	raw := stdout.Bytes()
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		http.Error(w, `{"error":"Reclaim failed","details":"empty output"}`, http.StatusInternalServerError)
+		return
+	}
+	if len(raw) > 1<<20 {
+		http.Error(w, `{"error":"Reclaim output too large"}`, http.StatusInternalServerError)
+		return
+	}
+	var res struct {
+		BeforeBytes    *int64 `json:"beforeBytes"`
+		AfterBytes     *int64 `json:"afterBytes"`
+		ReclaimedBytes *int64 `json:"reclaimedBytes"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"Reclaim failed","details":%q}`, string(raw[:min(500, len(raw))])), http.StatusInternalServerError)
+		return
+	}
+	if res.BeforeBytes == nil || res.AfterBytes == nil || res.ReclaimedBytes == nil {
+		http.Error(w, `{"error":"Reclaim failed","details":"missing fields"}`, http.StatusInternalServerError)
+		return
+	}
+	beforeGB := float64(*res.BeforeBytes) / (1 << 30)
+	afterGB := float64(*res.AfterBytes) / (1 << 30)
+	freedMB := float64(*res.ReclaimedBytes) / (1 << 20)
+	msg := fmt.Sprintf("Standby reclaimed: %.2f GB \u2192 %.2f GB (%.0f MB freed)", beforeGB, afterGB, freedMB)
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":         "success",
+		"beforeBytes":    *res.BeforeBytes,
+		"afterBytes":     *res.AfterBytes,
+		"reclaimedBytes": *res.ReclaimedBytes,
+		"message":        msg,
+	})
 }
