@@ -1,17 +1,47 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // ── Theme: semantic tokens, persisted, system fallback ──
+    const themeSelect = document.getElementById('theme-select');
+    const THEME_KEY = 'sysview-theme';
+    const THEMES = ['quattro', 'claude', 'apple'];
+    function applyTheme(t, persist = true) {
+        if (!THEMES.includes(t)) t = 'quattro';
+        document.documentElement.setAttribute('data-theme', t);
+        // apple auto-dark: when system is dark and user chose apple with no override, add helper class
+        if (t === 'apple' && window.matchMedia('(prefers-color-scheme: dark)').matches && !localStorage.getItem(THEME_KEY + '-mode')) {
+            document.documentElement.classList.add('apple-auto-dark');
+        } else {
+            document.documentElement.classList.remove('apple-auto-dark');
+        }
+        if (themeSelect) themeSelect.value = t;
+        if (persist) try { localStorage.setItem(THEME_KEY, t); } catch {}
+        try { localStorage.setItem(THEME_KEY + '-applied', t); } catch {}
+    }
+    (function initTheme() {
+        let saved = null;
+        try { saved = localStorage.getItem(THEME_KEY); } catch {}
+        if (saved && THEMES.includes(saved)) { applyTheme(saved, false); return; }
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        applyTheme(prefersDark ? 'quattro' : 'apple', false);
+    })();
+    if (themeSelect) themeSelect.addEventListener('change', () => applyTheme(themeSelect.value));
+    try {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            let saved = null; try { saved = localStorage.getItem(THEME_KEY); } catch {}
+            if (!saved) {
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                applyTheme(prefersDark ? 'quattro' : 'apple', false);
+            } else if (saved === 'apple') applyTheme('apple', false);
+        });
+    } catch {}
     // UI Elements
     const refreshBtn = document.getElementById('refresh-btn');
-    const refreshIcon = refreshBtn.querySelector('.refresh-icon');
+    const refreshIcon = refreshBtn ? refreshBtn.querySelector('.refresh-icon') : null;
     const lastUpdatedSpan = document.getElementById('last-updated');
     const cpuTotalSpan = document.getElementById('cpu-total');
     const ramUsedPctSpan = document.getElementById('ram-used-pct');
     const ramUsedRatioSpan = document.getElementById('ram-used-ratio');
     const wvCountSpan = document.getElementById('wv-count');
     const wvMemTotalSpan = document.getElementById('wv-mem-total');
-    const nonpagedPoolSpan = document.getElementById('nonpaged-pool');
-    const poolStatusSpan = document.getElementById('pool-status');
-    const poolWarningIcon = document.getElementById('pool-warning-icon');
-    
     const sizeInUseSpan = document.getElementById('size-inuse');
     const sizeStandbySpan = document.getElementById('size-standby');
     const sizeNonpagedSpan = document.getElementById('size-nonpaged');
@@ -250,23 +280,24 @@ document.addEventListener('DOMContentLoaded', () => {
         sizeNonpagedSpan.textContent = formatBytes(mem.NonpagedPoolBytes);
         sizePagedSpan.textContent = formatBytes(mem.PagedPoolBytes);
         
-        // Update Non-paged warning thresholds
+        // Update Non-paged warning thresholds — class-driven, no inline styles
         const nonPagedPoolMB = mem.NonpagedPoolBytes / (1024 * 1024);
         nonpagedPoolSpan.textContent = `${nonPagedPoolMB.toFixed(0)} MB`;
         
+        poolStatusSpan.classList.remove('pool-status--danger', 'pool-status--warn', 'pool-status--good');
         if (nonPagedPoolMB > 1500) {
-            poolStatusSpan.textContent = 'Leak Alert';
-            poolStatusSpan.style.color = 'var(--accent-danger)';
+            poolStatusSpan.textContent = 'Elevated non-paged pool';
+            poolStatusSpan.classList.add('pool-status--danger');
             poolWarningIcon.classList.add('warning');
             nonpagedDetailCard.classList.add('warning');
         } else if (nonPagedPoolMB > 1000) {
-            poolStatusSpan.textContent = 'High Usage';
-            poolStatusSpan.style.color = 'var(--accent-pool)';
+            poolStatusSpan.textContent = 'Elevated';
+            poolStatusSpan.classList.add('pool-status--warn');
             poolWarningIcon.classList.add('warning');
             nonpagedDetailCard.classList.add('warning');
         } else {
-            poolStatusSpan.textContent = 'Healthy';
-            poolStatusSpan.style.color = 'var(--accent-success)';
+            poolStatusSpan.textContent = 'Within expected range';
+            poolStatusSpan.classList.add('pool-status--good');
             poolWarningIcon.classList.remove('warning');
             nonpagedDetailCard.classList.remove('warning');
         }
@@ -699,21 +730,22 @@ document.addEventListener('DOMContentLoaded', () => {
             
             let winLabel = '';
             if (info.safety === 'critical') {
-                winLabel = '<span style="font-size:0.7rem; color:var(--accent-danger); background:rgba(239,68,68,0.06); padding: 0.1rem 0.35rem; border-radius:3px; border:1px solid rgba(239,68,68,0.15); margin-left:0.5rem">Critical</span>';
+                winLabel = '<span class="hog-badge-critical">Critical</span>';
             } else if (info.safety === 'caution') {
-                winLabel = '<span style="font-size:0.7rem; color:var(--accent-pool); background:rgba(245,158,11,0.06); padding: 0.1rem 0.35rem; border-radius:3px; border:1px solid rgba(245,158,11,0.15); margin-left:0.5rem">System</span>';
+                winLabel = '<span class="hog-badge-system">System</span>';
             }
             
+            const cpuClass = p.CPU > 0 ? 'hog-cpu--active' : 'hog-cpu--idle';
             trMain.innerHTML = `
                 <td>
                     <span class="safety-indicator ${badgeColor}"></span>
-                    <span style="font-weight: 500">${p.Name}</span>
+                    <span class="hog-name">${p.Name}</span>
                     ${winLabel}
                 </td>
-                <td class="text-right" style="font-family: monospace; color: var(--text-muted)">${p.PID}</td>
-                <td class="text-right" style="font-weight: 600; color: #ec4899">${(p.PrivateMemory / (1024 * 1024)).toFixed(0)} MB</td>
-                <td class="text-right" style="color: var(--text-secondary)">${(p.WorkingSet / (1024 * 1024)).toFixed(0)} MB</td>
-                <td class="text-right" style="color: ${p.CPU > 0 ? 'var(--accent-cpu)' : 'var(--text-muted)'}">${p.CPU > 0 ? p.CPU.toFixed(1) + '%' : '0%'}</td>
+                <td class="text-right hog-mono">${p.PID}</td>
+                <td class="text-right hog-mem">${(p.PrivateMemory / (1024 * 1024)).toFixed(0)} MB</td>
+                <td class="text-right hog-mono">${(p.WorkingSet / (1024 * 1024)).toFixed(0)} MB</td>
+                <td class="text-right hog-cpu ${cpuClass}">${p.CPU > 0 ? p.CPU.toFixed(1) + '%' : '0%'}</td>
             `;
             
             // Build the detail row
@@ -756,40 +788,27 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="hog-card ${info.safety}">
                             <div class="hog-status-header">
                                 ${statusIcon}
-                                <span>${info.title} &bull; ${statusLabel}</span>
+                                <span>${info.title} · ${statusLabel}</span>
                             </div>
                             <p>${info.desc}</p>
-                            ${p.Path ? `<p style="font-family:monospace; font-size:0.75rem; color:var(--text-muted); margin-top:0.25rem">Path: ${p.Path}</p>` : ''}
+                            ${p.Path ? `<p class="hog-path">Path: ${p.Path}</p>` : ''}
                         </div>
                     </div>
                 </td>
             `;
-            
-            // Add click listener to toggle expansion
+            // Add click listener to toggle expansion — CSS controls height
             trMain.addEventListener('click', () => {
                 const isExpanded = trMain.classList.contains('expanded');
                 
                 // Collapse all other hog rows
                 const expandedRows = memoryHogsTable.querySelectorAll('.hog-row.expanded');
                 expandedRows.forEach(row => {
-                    if (row !== trMain) {
-                        row.classList.remove('expanded');
-                        const detailRow = row.nextElementSibling;
-                        if (detailRow && detailRow.classList.contains('hog-detail-row')) {
-                            detailRow.querySelector('.hog-detail-content').style.maxHeight = '0px';
-                        }
-                    }
+                    if (row !== trMain) row.classList.remove('expanded');
                 });
                 
                 // Toggle clicked row
-                const detailContent = trDetail.querySelector('.hog-detail-content');
-                if (isExpanded) {
-                    trMain.classList.remove('expanded');
-                    detailContent.style.maxHeight = '0px';
-                } else {
-                    trMain.classList.add('expanded');
-                    detailContent.style.maxHeight = '180px';
-                }
+                if (isExpanded) trMain.classList.remove('expanded');
+                else trMain.classList.add('expanded');
             });
             
             memoryHogsTable.appendChild(trMain);
@@ -967,18 +986,18 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // If not running and no distros, hide the section
         if (!hasWslProcess && !hasRunningDistros) {
-            wslDrilldown.style.display = 'none';
+            wslDrilldown.classList.add('hidden');
             return;
         }
         
-        wslDrilldown.style.display = 'block';
+        wslDrilldown.classList.remove('hidden');
         
         // Check if Docker Desktop is actively locking WSL
         const isDockerRunning = allProcesses.some(p => p.Name.toLowerCase() === 'docker desktop' || p.Name.toLowerCase() === 'com.docker.backend');
         if (isDockerRunning && hasWslProcess) {
-            wslDockerWarning.style.display = 'flex';
+            wslDockerWarning.classList.remove('hidden');
         } else {
-            wslDockerWarning.style.display = 'none';
+            wslDockerWarning.classList.add('hidden');
         }
         
         
@@ -994,9 +1013,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 row.innerHTML = `
                     <div class="wsl-distro-name-container">
-                        <span style="font-weight: 600; font-size: 0.95rem;">${distro.Name}</span>
+                        <span class="wsl-distro-name">${distro.Name}</span>
                         ${distro.Default ? '<span class="wsl-default-badge">Default</span>' : ''}
-                        <span style="font-size: 0.75rem; color: var(--text-muted)">v${distro.Version}</span>
+                        <span class="wsl-distro-version">v${distro.Version}</span>
                     </div>
                     <span class="wsl-state-badge ${stateClass}">${distro.State}</span>
                 `;
@@ -1004,20 +1023,18 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } else {
             wslDistroList.innerHTML = `
-                <div style="color: var(--text-muted); font-size: 0.9rem; padding: 0.5rem 0;">
-                    No WSL distros registered (but vmmem process is running, likely starting up or shutting down).
-                </div>
+                <div class="wsl-empty">No WSL distros registered (but vmmem process is running, likely starting up or shutting down).</div>
             `;
         }
         
-        // Render config status
+        // Render config status — factual, not inferred cap
         wslConfigStatus.innerHTML = '';
         if (wslData && wslData.ConfigExists) {
             wslConfigStatus.className = 'wsl-config-status exists';
-            wslConfigStatus.innerHTML = '<strong>✅ Memory Capping Configured:</strong> A custom <code>.wslconfig</code> file was detected. Your WSL virtual machine memory limit is capped to prevent Windows RAM starvation.';
+            wslConfigStatus.innerHTML = '<strong>.wslconfig found</strong> in your profile folder. Check that it contains a valid <code>memory=</code> value under <code>[wsl2]</code>; an empty or unrelated file does not cap memory.';
         } else {
             wslConfigStatus.className = 'wsl-config-status missing';
-            wslConfigStatus.innerHTML = '<strong>⚠️ Memory Cap Missing:</strong> No <code>.wslconfig</code> cap was detected in your home folder. WSL2 will dynamically allocate up to <strong>50% (or more) of your RAM (16GB+)</strong> and will not release it until WSL is shut down.';
+            wslConfigStatus.innerHTML = '<strong>No .wslconfig found</strong> in <code>%UserProfile%\\.wslconfig</code>. WSL2 will size dynamically; see WSL Settings or create the file to set <code>memory=</code> if needed.';
         }
     }
 
