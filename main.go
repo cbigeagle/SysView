@@ -33,11 +33,12 @@ var snapshotScript string
 const defaultPort = 22880
 
 var (
-	capabilityToken string
-	snapshotSem     = make(chan struct{}, 2)
-	wslSem         = make(chan struct{}, 1)
-	reclaimSem     = make(chan struct{}, 1)
-	wslConfigSem   = make(chan struct{}, 1)
+	capabilityToken   string
+	snapshotSem       = make(chan struct{}, 2)
+	wslSem            = make(chan struct{}, 1)
+	reclaimSem        = make(chan struct{}, 1)
+	wslConfigSem      = make(chan struct{}, 1)
+	runtimeRestartSem = make(chan struct{}, 1)
 )
 // zero-alloc envelope validation types (H4T1)
 type envelopeTop struct {
@@ -98,6 +99,7 @@ func main() {
 	mux.HandleFunc("/api/wsl/shutdown", handleWslShutdown)
 	mux.HandleFunc("/api/wsl/config", handleWslConfig)
 	mux.HandleFunc("/api/reclaim/standby", handleReclaimStandby)
+	mux.HandleFunc("/api/runtime/restart", handleRuntimeRestart)
 	mux.HandleFunc("/api/config", handleConfig)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -874,5 +876,126 @@ func handleWslConfig(w http.ResponseWriter, r *http.Request) {
 		"path":    wslConfigPath,
 		"memory":  memoryNormalized,
 		"message": "Wrote memory=" + memoryNormalized + " to .wslconfig",
+	})
+}
+func handleRuntimeRestart(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"Method not allowed. Use POST."}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if !isSameOrigin(r) {
+		http.Error(w, `{"error":"Forbidden origin"}`, http.StatusForbidden)
+		return
+	}
+	if !requireToken(r) {
+		http.Error(w, `{"error":"Missing or invalid capability token"}`, http.StatusForbidden)
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	var req map[string]json.RawMessage
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &req)
+	}
+	rawConfirm, ok := req["confirm"]
+	if !ok {
+		http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
+		return
+	}
+	var confirm bool
+	if err := json.Unmarshal(rawConfirm, &confirm); err != nil || !confirm {
+		http.Error(w, `{"error":"Confirmation required"}`, http.StatusBadRequest)
+		return
+	}
+	rawHost, ok := req["host"]
+	if !ok {
+		http.Error(w, `{"error":"Host and PID required"}`, http.StatusBadRequest)
+		return
+	}
+	var host string
+	if err := json.Unmarshal(rawHost, &host); err != nil {
+		http.Error(w, `{"error":"Host and PID required"}`, http.StatusBadRequest)
+		return
+	}
+	host = strings.TrimSpace(host)
+	rawPid, ok := req["pid"]
+	if !ok {
+		http.Error(w, `{"error":"Host and PID required"}`, http.StatusBadRequest)
+		return
+	}
+	var pid int
+	if err := json.Unmarshal(rawPid, &pid); err != nil {
+		http.Error(w, `{"error":"Host and PID required"}`, http.StatusBadRequest)
+		return
+	}
+	if host == "" || pid <= 4 {
+		http.Error(w, `{"error":"Host and PID required"}`, http.StatusBadRequest)
+		return
+	}
+	select {
+	case runtimeRestartSem <- struct{}{}:
+		defer func() { <-runtimeRestartSem }()
+	default:
+		http.Error(w, `{"error":"Runtime restart already in progress"}`, http.StatusTooManyRequests)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	hostWithoutExe := strings.TrimSuffix(host, ".exe")
+	psScript := fmt.Sprintf(`
+$ErrorActionPreference='Stop'
+$p=Get-Process -Id %d -ErrorAction Stop
+if(-not $p){throw "PID not found"}
+if($p.Id -le 4){throw "Invalid PID"}
+$expected=%q
+if($expected -ne "" -and $p.ProcessName -ne $expected -and $p.ProcessName -ne %q){
+    # host mismatch is logged but still allow restart; do not block
+    Write-Host ("WARN: host mismatch expected "+$expected+" got "+$p.ProcessName)
+}
+Stop-Process -Id %d -Force -ErrorAction Stop
+`, pid, hostWithoutExe, host, pid)
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		http.Error(w, `{"error":"Gateway Timeout","details":"Runtime restart timed out"}`, http.StatusGatewayTimeout)
+		return
+	}
+	stderrStr := stderr.String()
+	stdoutStr := stdout.String()
+	if len(stdoutStr) > 1<<20 || len(stderrStr) > 1<<20 {
+		http.Error(w, `{"error":"Failed to restart host","details":"output too large"}`, http.StatusInternalServerError)
+		return
+	}
+	if err != nil {
+		lower := strings.ToLower(stderrStr)
+		if strings.Contains(stderrStr, "PID not found") || strings.Contains(lower, "cannot find a process") {
+			http.Error(w, `{"error":"PID not found"}`, http.StatusBadRequest)
+			return
+		}
+		if strings.Contains(stderrStr, "Invalid PID") {
+			http.Error(w, `{"error":"Not a runtime host"}`, http.StatusBadRequest)
+			return
+		}
+		http.Error(w, fmt.Sprintf(`{"error":"Failed to restart host","details":%q}`, stderrStr), http.StatusInternalServerError)
+		return
+	}
+	if strings.Contains(stderrStr, "PID not found") || strings.Contains(strings.ToLower(stderrStr), "cannot find a process") {
+		http.Error(w, `{"error":"PID not found"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.Contains(stderrStr, "Invalid PID") {
+		http.Error(w, `{"error":"Not a runtime host"}`, http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "success",
+		"host":    host,
+		"pid":     pid,
+		"message": fmt.Sprintf("Sent restart signal to %s (PID %d)", host, pid),
 	})
 }
