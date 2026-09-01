@@ -2031,7 +2031,67 @@ if (typeof document !== 'undefined') document.addEventListener('DOMContentLoaded
             grabSnapshot();
         }
     });
-    
+    // H5bT2: Reclaim Standby — capability token, confirm with Before GB, result banner
+    const reclaimBtn = document.getElementById('reclaim-standby-btn');
+    const reclaimResult = document.getElementById('reclaim-result');
+    if (reclaimBtn) {
+        reclaimBtn.addEventListener('click', async () => {
+            const token = await ensureToken();
+            if (!token) { alert('Missing capability token — reload the page.'); return; }
+            const beforeBytes = (currentData && currentData.Memory && currentData.Memory.StandbyBytes) ? currentData.Memory.StandbyBytes : 0;
+            const beforeGB = formatGB(beforeBytes);
+            const confirmMsg = `Reclaim ${beforeGB} standby cache?\n\nBefore: ${beforeGB} standby\n\nThis releases file cache to Available memory. No apps or unsaved work are affected. Windows will repopulate cache as needed.\n\nProceed?`;
+            if (!confirm(confirmMsg)) return;
+            const origText = reclaimBtn.textContent;
+            reclaimBtn.disabled = true;
+            reclaimBtn.textContent = 'Reclaiming...';
+            if (reclaimResult) { reclaimResult.className = 'reclaim-result'; reclaimResult.textContent = 'Reclaiming standby cache...'; }
+            try {
+                const res = await fetch('/api/reclaim/standby', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-SysView-Token': token },
+                    body: JSON.stringify({ confirm: true })
+                });
+                const bodyText = await res.text();
+                let data = null;
+                try { data = JSON.parse(bodyText); } catch {}
+                if (res.status === 403 && data && data.error === 'Requires Administrator') {
+                    if (reclaimResult) {
+                        reclaimResult.className = 'reclaim-result warning';
+                        reclaimResult.textContent = (data.details || 'Requires Administrator') + ' — Run SysView.exe as Administrator to reclaim standby';
+                    }
+                } else if (res.ok && data) {
+                    const before = data.beforeBytes != null ? data.beforeBytes : beforeBytes;
+                    const after = data.afterBytes != null ? data.afterBytes : 0;
+                    const reclaimed = data.reclaimedBytes != null ? data.reclaimedBytes : (before - after);
+                    if (reclaimResult) {
+                        reclaimResult.className = 'reclaim-result success';
+                        reclaimResult.textContent = `Standby ${formatGB(before)} -> ${formatGB(after)} (${formatBytes(reclaimed)} reclaimed)`;
+                    }
+                } else if (!res.ok) {
+                    const msg = (data && (data.details || data.error)) ? (data.details || data.error) : bodyText.slice(0, 400);
+                    if (reclaimResult) {
+                        reclaimResult.className = 'reclaim-result danger';
+                        reclaimResult.textContent = `Reclaim failed (${res.status}): ${msg}`;
+                    }
+                } else {
+                    if (reclaimResult) {
+                        reclaimResult.className = 'reclaim-result danger';
+                        reclaimResult.textContent = 'Reclaim failed: unexpected response';
+                    }
+                }
+            } catch (err) {
+                if (reclaimResult) {
+                    reclaimResult.className = 'reclaim-result danger';
+                    reclaimResult.textContent = `Reclaim failed: ${err.message}`;
+                }
+            } finally {
+                reclaimBtn.textContent = origText;
+                reclaimBtn.disabled = false;
+                grabSnapshot();
+            }
+        });
+    }
     // Simple filter debounce
     let searchTimeout = null;
     if(wvSearchInput){
