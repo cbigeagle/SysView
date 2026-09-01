@@ -13,7 +13,7 @@ A modern, glassmorphic Windows resource and memory diagnostics dashboard designe
 * **🛡️ Interactive Process Safety Analyzer**: Displays the top background memory hogs with color-coded safety indicators (🟢 Safe to close, 🟡 System service/Caution, 🔴 Critical OS component). Click any row to expand a rich description of what the process does and what happens if you close it.
 * **🐳 WSL2 & Hyper-V Ballooning Controller**: Detects active virtual machine instances (`vmmemWSL` / `vmmem`), parses active Linux distributions, warns you if a memory-capping `.wslconfig` is missing, and provides a **one-click shutdown button** to reclaim up to 20GB+ of locked RAM.
 * **💡 Diagnostics & Advice Engine**: Dynamically scans your system for memory anomalies (such as kernel driver leaks, memory saturation, or missing caps) and recommends concrete, real-world remedies.
-
+* **📈 Bounded History & Redacted Export**: Bounded 15-min history with deltas/sparklines and redacted JSON export for support/triage (auto-refresh 2s/5s/10s, Pause/Resume, per-sample sparklines; export strips CommandLine by default).
 ---
 
 ## 🛠️ Architecture & Core Mechanics
