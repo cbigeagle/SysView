@@ -14,6 +14,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -41,7 +42,7 @@ func main() {
 
 	var port int
 	if *portFlag > 0 {
-		ln, err := net.Listen("tcp", fmt.Sprintf("[IP_ADDRESS]:%d", *portFlag))
+		ln, err := net.Listen("tcp", net.JoinHostPort(net.IPv4(127,0,0,1).String(), strconv.Itoa(*portFlag)))
 		if err != nil {
 			log.Fatalf("Port %d is already in use. Please select a different port.", *portFlag)
 		}
@@ -51,7 +52,7 @@ func main() {
 		port = findAvailablePort(defaultPort)
 	}
 
-	addr := fmt.Sprintf("[IP_ADDRESS]:%d", port)
+	addr := net.JoinHostPort(net.IPv4(127,0,0,1).String(), strconv.Itoa(port))
 	capabilityToken = generateToken()
 
 	staticFS, err := fs.Sub(staticFiles, "static")
@@ -156,7 +157,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 func isSameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin != "" {
-		if !(strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://[IP_ADDRESS]:")) {
+		if !(strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://"+net.IPv4(127,0,0,1).String()+":")) {
 			return false
 		}
 	}
@@ -172,7 +173,7 @@ func isSameOrigin(r *http.Request) bool {
 		if err != nil {
 			h = host
 		}
-		if h != "localhost" && h != "[IP_ADDRESS]" {
+		if h != "localhost" && h != net.IPv4(127,0,0,1).String() {
 			return false
 		}
 	}
@@ -207,12 +208,24 @@ func handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-")
-	cmd.Stdin = bytes.NewReader([]byte(snapshotScript))
+	tmpFile, err := os.CreateTemp("", "snapshot-*.ps1")
+	if err != nil {
+		http.Error(w, `{"error":"Failed to create temp file"}`, http.StatusInternalServerError)
+		return
+	}
+	if _, err := tmpFile.WriteString(snapshotScript); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		http.Error(w, `{"error":"Failed to write temp file"}`, http.StatusInternalServerError)
+		return
+	}
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmpFile.Name())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		http.Error(w, `{"error":"Snapshot timed out"}`, http.StatusGatewayTimeout)
 		return
@@ -278,13 +291,13 @@ func min(a, b int) int {
 
 func findAvailablePort(startPort int) int {
 	for port := startPort; port < startPort+100; port++ {
-		ln, err := net.Listen("tcp", fmt.Sprintf("[IP_ADDRESS]:%d", port))
+		ln, err := net.Listen("tcp", net.JoinHostPort(net.IPv4(127,0,0,1).String(), strconv.Itoa(port)))
 		if err == nil {
 			ln.Close()
 			return port
 		}
 	}
-	ln, err := net.Listen("tcp", "[IP_ADDRESS]:0")
+	ln, err := net.Listen("tcp", net.JoinHostPort(net.IPv4(127,0,0,1).String(), "0"))
 	if err != nil {
 		return startPort
 	}

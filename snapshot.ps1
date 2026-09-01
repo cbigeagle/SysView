@@ -301,18 +301,14 @@ $envelope = @{
     data = $data
 }
 
-# Also emit legacy top-level for backward compat during transition
+# Also emit legacy top-level for backward compat (without duplicating envelope keys)
 $legacy = @{
     Cores = $data.Cores
     Memory = $data.Memory
     AllProcesses = $data.AllProcesses
     WebViewProcesses = $data.WebViewProcesses
     WSL = $data.WSL
-    capturedAt = $capturedAt
-    schemaVersion = $schemaVersion
-    providers = $providers
-    errors = $errors
 }
-# Merge: envelope is canonical, legacy keys at top for old clients
-$out = $envelope + $legacy
+$out = $envelope.Clone()
+foreach ($k in $legacy.Keys) { $out[$k] = $legacy[$k] }
 $out | ConvertTo-Json -Depth 6 -Compress
